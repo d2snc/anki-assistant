@@ -1,0 +1,15 @@
+# Ambiente virtual
+.venv/
+
+# Chaves e configurações locais
+config.py
+
+# Cache de áudio TTS gerado
+cached_audio/
+
+# Python
+__pycache__/
+*.pyc
+
+# Modelos Whisper baixados automaticamente
+~/.cache/huggingface/

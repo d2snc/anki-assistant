@@ -16,3 +16,8 @@ I love learning new things, but the process of actually acquiring and maintainin
 - Speech-To-Text: [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) (I used the `tiny.en` model, about 0.5s latency on my M1 mac)
 - Language Model: [ChatGPT](https://platform.openai.com/docs/guides/text-generation) (I used `gpt-3.5-turbo-1106`)
 - Others: [PyWebView](https://github.com/r0x0r/pywebview), [Silero VAD](https://github.com/snakers4/silero-vad)
+
+
+## Updated Things:
+
+So, i`m using anki to study and i needed some tool to help me study while driving, my objective here is to make an ai study tutor that can read the cards for me and ask me the questions in audio, then i can answer by speaking, the ai will listen and evaluate if my answer is correct or not, then it will proceed to the next card or give me some feedback. the feedback should be a summary of what i said and what i missed, the main thing is that i want to be able to study without looking at the screen, so the ai should be able to handle the interaction in a way that i don't need to look at the screen.
