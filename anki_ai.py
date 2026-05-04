@@ -210,6 +210,20 @@ def tts(text):
     asyncio.run(_stream())
 
 
+def strip_punctuation_for_tts(text):
+    """
+    Remove sinais de pontuação e artefatos Markdown que soam mal em TTS.
+    Preserva letras, números, espaços e pontos de reticências naturais.
+    """
+    # Remove formatação Markdown (negrito, itálico, listas)
+    text = re.sub(r'[*_~`#]+', '', text)
+    # Remove pontuação que não agrega ao áudio
+    text = re.sub(r'[\-–—•,;:!?()\[\]{}<>/\\|@#^&+=]', ' ', text)
+    # Normaliza múltiplos espaços
+    text = re.sub(r' +', ' ', text).strip()
+    return text
+
+
 def make_latex_speakable(text):
     """
     Usa LLM local (Ollama) para converter LaTeX/símbolos em texto falável.
@@ -331,7 +345,8 @@ def main_backend(window):
                     tts(elogio)
             else:
                 # Errou: uma fala natural combinando feedback + resposta correta
-                correcao = f"Você errou. {feedback} A resposta correta é: {answer_text}" if feedback else f"Você errou. A resposta correta é: {answer_text}"
+                answer_spoken = strip_punctuation_for_tts(answer_text)
+                correcao = f"Você errou. {feedback} A resposta correta é: {answer_spoken}" if feedback else f"Você errou. A resposta correta é: {answer_spoken}"
                 display_html(
                     current_card.render_output(browser=True).answer_and_style()
                 )
