@@ -383,6 +383,7 @@
         let currentAnswerText = '';
         let audioQueue = [];
         let isPlayingAudio = false;
+        let globalAudio = new Audio();
 
         // Silence detection
         let audioContext;
@@ -413,16 +414,21 @@
             for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
             const blob = new Blob([buf], { type: 'audio/mpeg' });
             const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
-            audio.onended = () => {
+            
+            globalAudio.src = url;
+            globalAudio.onended = () => {
                 URL.revokeObjectURL(url);
                 if (callback) callback();
             };
-            audio.onerror = () => {
+            globalAudio.onerror = () => {
                 URL.revokeObjectURL(url);
                 if (callback) callback();
             };
-            audio.play().catch(() => { if (callback) callback(); });
+            
+            globalAudio.play().catch(e => {
+                console.error("Erro ao tocar áudio:", e);
+                if (callback) callback();
+            });
         }
 
         // ---- Flash screen ----
@@ -454,6 +460,9 @@
 
         // ---- Socket.IO ----
         function startSession() {
+            // "Destrava" o elemento de áudio global no primeiro toque do usuário
+            globalAudio.play().catch(() => {});
+
             socket = io({ transports: ['websocket'] });
 
             socket.on('connect', () => {

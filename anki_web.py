@@ -6,6 +6,9 @@ Uso:  python3 anki_web.py
 Acesse:  http://<IP-do-PC>:5000  no navegador do celular
 """
 
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import re
 import time
@@ -281,7 +284,7 @@ if __name__ == "__main__":
 
     print(f"\n{'='*50}")
     print(f"  Anki Voice Assistant — Versão Web")
-    print(f"  Acesse no celular: http://{local_ip}:5000")
+    print(f"  Servidor iniciado na porta 5001.")
     print(f"{'='*50}\n")
 
-    socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
+    socketio.run(app, host="0.0.0.0", port=5001)
