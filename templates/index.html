@@ -525,7 +525,8 @@
 
             socket.on('feedback_tts', (data) => {
                 playAudioBase64(data.audio, () => {
-                    showState('result');
+                    // Passa automaticamente para a próxima pergunta após o áudio terminar
+                    socket.emit('next_card');
                 });
             });
 
