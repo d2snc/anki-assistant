@@ -129,6 +129,30 @@ def serve_media(filename):
     return send_from_directory(get_collection().media.dir(), filename)
 
 
+def parse_deck_tree(node):
+    decks = []
+    if node.name != "":
+        decks.append({
+            "id": node.deck_id,
+            "name": node.name,
+            "new": getattr(node, 'new_count', 0),
+            "learn": getattr(node, 'learn_count', 0),
+            "review": getattr(node, 'review_count', 0),
+            "level": getattr(node, 'level', 0)
+        })
+    for child in getattr(node, 'children', []):
+        decks.extend(parse_deck_tree(child))
+    return decks
+
+
+@app.route("/decks")
+def get_decks_api():
+    col = get_collection()
+    tree = col.sched.deck_due_tree()
+    decks = parse_deck_tree(tree)
+    return {"decks": decks}
+
+
 @socketio.on("connect")
 def handle_connect():
     log.info("Cliente conectado")
@@ -136,8 +160,12 @@ def handle_connect():
 
 
 @socketio.on("start_session")
-def handle_start_session():
-    """Inicia sessão de estudo — envia primeiro card."""
+def handle_start_session(data):
+    """Inicia sessão de estudo focada no deck selecionado."""
+    deck_id = data.get("deck_id")
+    if deck_id:
+        col = get_collection()
+        col.decks.set_current(deck_id)
     send_next_card()
 
 

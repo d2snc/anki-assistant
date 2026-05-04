@@ -94,11 +94,19 @@
         #card-area {
             flex: 1;
             display: flex;
-            align-items: center;
+            align-items: flex-start; /* Permite scroll vertical se for maior que a tela */
             justify-content: center;
-            padding: 12px 20px;
+            padding: 20px;
             overflow-y: auto;
             min-height: 0;
+        }
+
+        #card-wrapper {
+            margin: auto;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
         }
 
         #card-content {
@@ -261,6 +269,8 @@
             display: none;
             text-align: center;
             padding: 40px 20px;
+            margin: auto;
+            width: 100%;
         }
         #session-end .emoji {
             font-size: 3rem;
@@ -275,7 +285,9 @@
         /* Initial state */
         #start-screen {
             text-align: center;
-            padding: 40px 20px;
+            padding: 20px;
+            margin: auto;
+            width: 100%;
         }
         #start-screen .emoji {
             font-size: 3.5rem;
@@ -301,6 +313,51 @@
         #btn-start:hover {
             box-shadow: 0 0 24px var(--accent-glow);
         }
+
+        /* Deck List */
+        .decks-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 100%;
+            max-width: 600px;
+            margin: 16px auto 0;
+            text-align: left;
+        }
+        .deck-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 16px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .deck-item:hover {
+            border-color: var(--accent);
+            box-shadow: 0 0 12px var(--accent-glow);
+        }
+        .deck-name {
+            font-size: 1.05rem;
+            font-weight: 500;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .deck-counts {
+            display: flex;
+            gap: 12px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            font-family: monospace;
+        }
+        .count-new { color: #00a8ff; }
+        .count-learn { color: #e84118; }
+        .count-review { color: #4cd137; }
+        .count-zero { color: var(--text-muted); font-weight: 400; }
 
         /* Listening indicator */
         .listening-dots {
@@ -339,9 +396,9 @@
         <!-- Start screen -->
         <div id="start-screen">
             <div class="emoji">🎙️</div>
-            <h2>Pronto para estudar?</h2>
-            <p>Responda os flashcards usando sua voz</p>
-            <button id="btn-start" class="btn" onclick="startSession()">Começar</button>
+            <h2>Anki Voice</h2>
+            <p id="start-subtitle">Carregando seus decks...</p>
+            <div id="decks-container" class="decks-list hidden"></div>
         </div>
 
         <!-- Card content (hidden initially) -->
@@ -458,16 +515,54 @@
             statusText.innerHTML = msg;
         }
 
+        // ---- Decks fetch ----
+        window.onload = async () => {
+            try {
+                const res = await fetch('/decks');
+                const data = await res.json();
+                renderDecks(data.decks);
+            } catch(e) {
+                console.error(e);
+                document.getElementById('start-subtitle').textContent = "Erro ao carregar decks. Anki está aberto?";
+            }
+        };
+
+        function renderDecks(decks) {
+            const container = document.getElementById('decks-container');
+            document.getElementById('start-subtitle').textContent = "Selecione um deck para estudar:";
+            container.innerHTML = '';
+            container.classList.remove('hidden');
+            
+            decks.forEach(deck => {
+                const item = document.createElement('div');
+                item.className = 'deck-item';
+                item.style.marginLeft = (deck.level * 16) + 'px';
+                
+                item.innerHTML = `
+                    <div class="deck-name">${deck.name}</div>
+                    <div class="deck-counts">
+                        <span class="${deck.new > 0 ? 'count-new' : 'count-zero'}">${deck.new}</span>
+                        <span class="${deck.learn > 0 ? 'count-learn' : 'count-zero'}">${deck.learn}</span>
+                        <span class="${deck.review > 0 ? 'count-review' : 'count-zero'}">${deck.review}</span>
+                    </div>
+                `;
+                item.onclick = () => startSession(deck.id);
+                container.appendChild(item);
+            });
+        }
+
         // ---- Socket.IO ----
-        function startSession() {
+        function startSession(deckId) {
             // "Destrava" o elemento de áudio global no primeiro toque do usuário
             globalAudio.play().catch(() => {});
+            showState('card');
+            setStatus('Conectando...');
 
             socket = io({ transports: ['websocket'] });
 
             socket.on('connect', () => {
-                setStatus('Conectado. Carregando cards...');
-                socket.emit('start_session');
+                setStatus('Carregando cards...');
+                socket.emit('start_session', { deck_id: deckId });
             });
 
             socket.on('card_html', (data) => {
