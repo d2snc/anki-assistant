@@ -187,14 +187,12 @@ def handle_audio_answer(data):
 
     emit("status", {"message": "Transcrevendo..."})
 
-    # Converte WebM para PCM
-    pcm_data = convert_webm_to_pcm(audio_webm)
-    if pcm_data is None or len(pcm_data) == 0:
-        emit("error", {"message": "Erro ao processar áudio"})
-        return
+    import io
+    webm_io = io.BytesIO(audio_webm)
+    webm_io.name = "audio.webm"
 
-    # Transcreve
-    user_response = transcribe(pcm_data)
+    # Transcreve usando API (suporta webm nativamente)
+    user_response = transcribe(webm_io)
     log.debug(f"Transcrição: {user_response}")
     emit("transcription", {"text": user_response})
 

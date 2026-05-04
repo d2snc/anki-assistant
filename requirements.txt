@@ -1,5 +1,6 @@
 anki==23.10.1
-faster-whisper>=1.0.0
+openai
+python-dotenv
 html2text==2020.1.16
 google-genai
 edge-tts

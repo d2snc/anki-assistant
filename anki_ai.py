@@ -7,9 +7,31 @@ import subprocess
 import re
 
 import numpy as np
-from faster_whisper import WhisperModel
 from anki.collection import Collection
 from html2text import html2text
+import io
+import wave
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()
+
+# Verifica qual API será usada
+if os.getenv("GROQ_API_KEY"):
+    openai_client = OpenAI(
+        api_key=os.environ.get("GROQ_API_KEY"),
+        base_url="https://api.groq.com/openai/v1"
+    )
+    LLM_MODEL = "llama-3.1-8b-instant"
+    WHISPER_MODEL = "whisper-large-v3"
+elif os.getenv("OPENAI_API_KEY"):
+    openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    LLM_MODEL = "gpt-4o-mini"
+    WHISPER_MODEL = "whisper-1"
+else:
+    print("\nERRO: Nenhuma chave de API encontrada (GROQ_API_KEY ou OPENAI_API_KEY).")
+    print("Crie um arquivo .env usando o .env.example como modelo.\n")
+    sys.exit(1)
 
 
 def strip_images_from_text(html_text):
@@ -28,10 +50,6 @@ log.setLevel(logging.DEBUG)
 logging.basicConfig()
 
 
-# --- Configuração do LLM ---
-import ollama as ollama_client
-OLLAMA_MODEL = "qwen2.5:3b"
-
 # Voz neural em PT-BR (Microsoft Edge TTS)
 TTS_VOICE = "pt-BR-ThalitaNeural"
 
@@ -46,14 +64,8 @@ vad_model = None
 
 
 def ensure_models_loaded():
-    """Carrega modelos Whisper e VAD se ainda não carregados."""
-    global whisper_model, vad_model
-    if whisper_model is None:
-        whisper_model = WhisperModel(
-            "medium",
-            device="cpu",
-            compute_type="int8",
-        )
+    """Carrega VAD se ainda não carregado."""
+    global vad_model
     if vad_model is None:
         vad_model = load_silero_vad()
 
@@ -71,32 +83,24 @@ def confidence(chunk):
     return vad_model(torch.from_numpy(audio_float32), SAMPLE_RATE).item()  # type: ignore
 
 
-def transcribe(audio_data):
+def transcribe(file_obj):
     """
-    Usa Whisper para transcrever áudio.
+    Usa OpenAI/Groq API para transcrever áudio.
     """
-    if isinstance(audio_data, bytes):
-        audio_data = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
-    # Prompt com vocabulário naval/marítimo para guiar o modelo
     MARITIME_PROMPT = (
         "rebocador, rebocadores, propulsão, propulsores, azimutal, azimutais, "
         "cicloidal, cicloidais, manobra, manobras, casco, proa, popa, costado, "
         "convés, calado, bolina, reboque, cabo de reboque, "
         "tubulão, kort, manobra portuária, força de tiro"
     )
-    ensure_models_loaded()
-    max_val = np.max(np.abs(audio_data))
-    if max_val > 0:
-        audio_data = audio_data / max_val
-    segments, _ = whisper_model.transcribe(
-        audio_data,
+    
+    resp = openai_client.audio.transcriptions.create(
+        model=WHISPER_MODEL,
+        file=file_obj,
         language="pt",
-        beam_size=7,
-        without_timestamps=True,
-        initial_prompt=MARITIME_PROMPT,
-        condition_on_previous_text=False,
+        prompt=MARITIME_PROMPT
     )
-    return "".join(x.text for x in segments)
+    return resp.text
 
 
 def transcribe_answer(audio_interface=None):
@@ -163,7 +167,17 @@ def transcribe_answer(audio_interface=None):
             stt_start = time.time()
             next_chunk = b"".join(data)
             data.clear()
-            transcription += transcribe(next_chunk)
+            
+            wav_io = io.BytesIO()
+            with wave.open(wav_io, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(SAMPLE_RATE)
+                wf.writeframes(next_chunk)
+            wav_io.seek(0)
+            wav_io.name = "audio.wav"
+            
+            transcription += transcribe(wav_io) + " "
             log.debug(f"STT em {time.time() - stt_start:.2f}s")
         else:  # speaking_gap > 2.0
             log.info("Transcrição finalizada")
@@ -226,16 +240,20 @@ def strip_punctuation_for_tts(text):
 
 def make_latex_speakable(text):
     """
-    Usa LLM local (Ollama) para converter LaTeX/símbolos em texto falável.
+    Usa LLM (OpenAI/Groq) para converter LaTeX/símbolos em texto falável.
     """
     if "\\" not in text and "$" not in text:
         return text
-    response = ollama_client.generate(
-        model=OLLAMA_MODEL,
-        prompt="Traduza todo LaTeX/símbolos para que possa ser lido em voz alta naturalmente. "
-               "Retorne APENAS o texto traduzido, sem mais nada:\n" + text,
+    
+    resp = openai_client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{
+            "role": "user",
+            "content": "Traduza todo LaTeX/símbolos para que possa ser lido em voz alta naturalmente. "
+                       "Retorne APENAS o texto traduzido, sem mais nada:\n" + text
+        }]
     )
-    return response.response.strip()
+    return resp.choices[0].message.content.strip()
 
 
 def evaluate_response(question, answer, user_response):
@@ -261,8 +279,12 @@ def evaluate_response(question, answer, user_response):
         f"Resposta correta: {answer}\n"
         f'Resposta do aluno: "{user_response}"'
     )
-    response = ollama_client.generate(model=OLLAMA_MODEL, prompt=prompt)
-    raw = response.response.strip()
+    
+    resp = openai_client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    raw = resp.choices[0].message.content.strip()
     log.debug(f"LLM raw: {raw!r}")
 
     score = 2

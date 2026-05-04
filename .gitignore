@@ -3,6 +3,9 @@
 
 # Chaves e configurações locais
 config.py
+.env
+cert.pem
+key.pem
 
 # Cache de áudio TTS gerado
 cached_audio/
