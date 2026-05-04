@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="description" content="Anki Voice Assistant — Estude flashcards com voz">
+    <title>Anki Voice Assistant</title>
+
+    <!-- KaTeX para LaTeX -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"
+        integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"
+        integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8"
+        crossorigin="anonymous"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+        integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
+
+    <!-- Socket.IO -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-card: #141829;
+            --bg-card-hover: #1a1f38;
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.3);
+            --success: #22c55e;
+            --success-glow: rgba(34, 197, 94, 0.25);
+            --error: #ef4444;
+            --error-glow: rgba(239, 68, 68, 0.25);
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border: rgba(255, 255, 255, 0.06);
+            --radius: 16px;
+            --radius-sm: 10px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            display: flex;
+            flex-direction: column;
+            transition: background-color 0.6s ease;
+        }
+
+        /* Flash overlay */
+        #flash-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            pointer-events: none;
+            z-index: 100;
+            opacity: 0;
+            transition: opacity 0.15s ease-in;
+        }
+        #flash-overlay.active {
+            opacity: 1;
+        }
+
+        /* Header */
+        header {
+            padding: 16px 20px 8px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        header h1 {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        /* Card area */
+        #card-area {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px 20px;
+            overflow-y: auto;
+            min-height: 0;
+        }
+
+        #card-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 28px 24px;
+            width: 100%;
+            max-width: 600px;
+            font-size: 1.15rem;
+            line-height: 1.6;
+            text-align: center;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        #card-content img {
+            max-width: 100%;
+            height: auto;
+            border-radius: var(--radius-sm);
+            margin: 8px 0;
+        }
+
+        /* Status bar */
+        #status-bar {
+            padding: 8px 20px;
+            text-align: center;
+            flex-shrink: 0;
+            min-height: 40px;
+        }
+        #status-text {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+        #transcription-text {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-style: italic;
+            margin-top: 4px;
+        }
+
+        /* Controls */
+        #controls {
+            padding: 12px 20px 32px;
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            align-items: center;
+            flex-shrink: 0;
+        }
+
+        .btn {
+            border: none;
+            border-radius: var(--radius-sm);
+            font-family: inherit;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .btn:active {
+            transform: scale(0.96);
+        }
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Record button — large, centered */
+        #btn-record {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: white;
+            font-size: 1.8rem;
+            box-shadow: 0 0 0 0 var(--accent-glow);
+            position: relative;
+        }
+        #btn-record:hover:not(:disabled) {
+            box-shadow: 0 0 20px 4px var(--accent-glow);
+        }
+        #btn-record.recording {
+            background: var(--error);
+            animation: pulse-record 1.4s ease-in-out infinite;
+        }
+
+        @keyframes pulse-record {
+            0%, 100% { box-shadow: 0 0 0 0 var(--error-glow); }
+            50% { box-shadow: 0 0 0 16px var(--error-glow); }
+        }
+
+        /* Secondary buttons */
+        .btn-secondary {
+            padding: 14px 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+        .btn-secondary:hover:not(:disabled) {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
+        }
+
+        /* Próximo button (success style) */
+        #btn-next {
+            padding: 14px 24px;
+            background: var(--accent);
+            color: white;
+        }
+        #btn-next:hover:not(:disabled) {
+            box-shadow: 0 0 16px var(--accent-glow);
+        }
+
+        /* Score badge */
+        #score-badge {
+            display: none;
+            margin: 12px auto;
+            padding: 6px 16px;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-align: center;
+            width: fit-content;
+        }
+        #score-badge.score-good {
+            background: var(--success-glow);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+        #score-badge.score-bad {
+            background: var(--error-glow);
+            color: var(--error);
+            border: 1px solid var(--error);
+        }
+
+        /* Loading spinner */
+        .spinner {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            border: 2px solid var(--text-muted);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Session end */
+        #session-end {
+            display: none;
+            text-align: center;
+            padding: 40px 20px;
+        }
+        #session-end .emoji {
+            font-size: 3rem;
+            margin-bottom: 16px;
+        }
+        #session-end p {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        /* Initial state */
+        #start-screen {
+            text-align: center;
+            padding: 40px 20px;
+        }
+        #start-screen .emoji {
+            font-size: 3.5rem;
+            margin-bottom: 20px;
+        }
+        #start-screen h2 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        #start-screen p {
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+            margin-bottom: 28px;
+        }
+        #btn-start {
+            padding: 16px 40px;
+            background: var(--accent);
+            color: white;
+            font-size: 1.05rem;
+            border-radius: var(--radius);
+        }
+        #btn-start:hover {
+            box-shadow: 0 0 24px var(--accent-glow);
+        }
+
+        /* Listening indicator */
+        .listening-dots {
+            display: inline-flex;
+            gap: 4px;
+            align-items: center;
+            vertical-align: middle;
+            margin-left: 4px;
+        }
+        .listening-dots span {
+            width: 5px;
+            height: 5px;
+            background: var(--accent);
+            border-radius: 50%;
+            animation: bounce-dot 1.2s ease-in-out infinite;
+        }
+        .listening-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .listening-dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes bounce-dot {
+            0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+            40% { transform: translateY(-6px); opacity: 1; }
+        }
+
+        /* Hide elements by state */
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <div id="flash-overlay"></div>
+
+    <header>
+        <h1>Anki Voice Assistant</h1>
+    </header>
+
+    <div id="card-area">
+        <!-- Start screen -->
+        <div id="start-screen">
+            <div class="emoji">🎙️</div>
+            <h2>Pronto para estudar?</h2>
+            <p>Responda os flashcards usando sua voz</p>
+            <button id="btn-start" class="btn" onclick="startSession()">Começar</button>
+        </div>
+
+        <!-- Card content (hidden initially) -->
+        <div id="card-wrapper" class="hidden">
+            <div id="card-content">Carregando...</div>
+            <div id="score-badge"></div>
+        </div>
+
+        <!-- Session end (hidden initially) -->
+        <div id="session-end">
+            <div class="emoji">🎉</div>
+            <p id="session-end-msg"></p>
+        </div>
+    </div>
+
+    <div id="status-bar">
+        <div id="status-text"></div>
+        <div id="transcription-text"></div>
+    </div>
+
+    <div id="controls">
+        <button id="btn-skip" class="btn btn-secondary hidden" onclick="skipCard()">
+            ⏭ Pular
+        </button>
+        <button id="btn-record" class="btn hidden" onclick="toggleRecording()" disabled>
+            🎤
+        </button>
+        <button id="btn-next" class="btn hidden" onclick="nextCard()">
+            Próximo →
+        </button>
+    </div>
+
+    <script>
+        // ---- State ----
+        let socket;
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+        let currentAnswerText = '';
+        let audioQueue = [];
+        let isPlayingAudio = false;
+
+        // Silence detection
+        let audioContext;
+        let analyser;
+        let silenceTimer = null;
+        let hasSpokeOnce = false;
+        const SILENCE_THRESHOLD = 15; // RMS volume abaixo disso = silêncio
+        const SILENCE_TIMEOUT_MS = 2000; // 2 segundos de silêncio para parar
+
+        // ---- DOM refs ----
+        const startScreen = document.getElementById('start-screen');
+        const cardWrapper = document.getElementById('card-wrapper');
+        const cardContent = document.getElementById('card-content');
+        const scoreBadge = document.getElementById('score-badge');
+        const statusText = document.getElementById('status-text');
+        const transcriptionText = document.getElementById('transcription-text');
+        const btnRecord = document.getElementById('btn-record');
+        const btnSkip = document.getElementById('btn-skip');
+        const btnNext = document.getElementById('btn-next');
+        const sessionEnd = document.getElementById('session-end');
+        const sessionEndMsg = document.getElementById('session-end-msg');
+        const flashOverlay = document.getElementById('flash-overlay');
+
+        // ---- Audio playback ----
+        function playAudioBase64(b64, callback) {
+            const bytes = atob(b64);
+            const buf = new Uint8Array(bytes.length);
+            for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
+            const blob = new Blob([buf], { type: 'audio/mpeg' });
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audio.onended = () => {
+                URL.revokeObjectURL(url);
+                if (callback) callback();
+            };
+            audio.onerror = () => {
+                URL.revokeObjectURL(url);
+                if (callback) callback();
+            };
+            audio.play().catch(() => { if (callback) callback(); });
+        }
+
+        // ---- Flash screen ----
+        function flashScreen(color) {
+            flashOverlay.style.backgroundColor = color;
+            flashOverlay.classList.add('active');
+            setTimeout(() => flashOverlay.classList.remove('active'), 800);
+        }
+
+        // ---- UI State management ----
+        function showState(state) {
+            startScreen.classList.toggle('hidden', state !== 'start');
+            cardWrapper.classList.toggle('hidden', state !== 'card' && state !== 'result');
+            sessionEnd.classList.toggle('hidden', state !== 'end');
+
+            btnRecord.classList.toggle('hidden', state !== 'card');
+            btnSkip.classList.toggle('hidden', state !== 'card');
+            btnNext.classList.toggle('hidden', state !== 'result');
+
+            if (state === 'card') {
+                scoreBadge.style.display = 'none';
+                transcriptionText.textContent = '';
+            }
+        }
+
+        function setStatus(msg) {
+            statusText.innerHTML = msg;
+        }
+
+        // ---- Socket.IO ----
+        function startSession() {
+            socket = io({ transports: ['websocket'] });
+
+            socket.on('connect', () => {
+                setStatus('Conectado. Carregando cards...');
+                socket.emit('start_session');
+            });
+
+            socket.on('card_html', (data) => {
+                currentAnswerText = data.answer_text;
+                cardContent.innerHTML = data.html;
+                // Render KaTeX if available
+                if (typeof renderMathInElement === 'function') {
+                    renderMathInElement(cardContent);
+                }
+                showState('card');
+                btnRecord.disabled = true;
+                setStatus('Ouvindo pergunta <span class="listening-dots"><span></span><span></span><span></span></span>');
+            });
+
+            socket.on('question_tts', (data) => {
+                playAudioBase64(data.audio, () => {
+                    // Auto-inicia gravação após terminar de ler a pergunta
+                    startRecording();
+                });
+            });
+
+            socket.on('status', (data) => {
+                setStatus('<span class="spinner"></span> ' + data.message);
+            });
+
+            socket.on('transcription', (data) => {
+                transcriptionText.textContent = '📝 "' + data.text + '"';
+            });
+
+            socket.on('result', (data) => {
+                flashScreen(data.flash_color);
+
+                scoreBadge.style.display = 'block';
+                if (data.score >= 4) {
+                    scoreBadge.textContent = '✅ Nota ' + data.score;
+                    scoreBadge.className = 'score-good';
+                } else {
+                    scoreBadge.textContent = '❌ Nota ' + data.score;
+                    scoreBadge.className = 'score-bad';
+                }
+
+                if (data.feedback) {
+                    setStatus(data.feedback);
+                } else {
+                    setStatus(data.score >= 4 ? 'Acertou!' : 'Errou');
+                }
+            });
+
+            socket.on('show_answer', (data) => {
+                cardContent.innerHTML = data.html;
+                if (typeof renderMathInElement === 'function') {
+                    renderMathInElement(cardContent);
+                }
+            });
+
+            socket.on('feedback_tts', (data) => {
+                playAudioBase64(data.audio, () => {
+                    showState('result');
+                });
+            });
+
+            socket.on('session_end', (data) => {
+                sessionEndMsg.textContent = data.message;
+                showState('end');
+                setStatus('');
+            });
+
+            socket.on('error', (data) => {
+                setStatus('⚠️ ' + data.message);
+            });
+
+            socket.on('disconnect', () => {
+                setStatus('Desconectado do servidor');
+            });
+        }
+
+        // ---- Recording ----
+        async function toggleRecording() {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                await startRecording();
+            }
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        channelCount: 1,
+                        sampleRate: 16000,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                    }
+                });
+
+                audioChunks = [];
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                        ? 'audio/webm;codecs=opus'
+                        : 'audio/webm'
+                });
+
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) audioChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    stopSilenceDetection();
+                    stream.getTracks().forEach(t => t.stop());
+                    sendAudio();
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                btnRecord.classList.add('recording');
+                btnRecord.textContent = '⏹';
+                btnRecord.disabled = false;
+                btnSkip.disabled = true;
+                setStatus('Gravando... fale sua resposta');
+
+                // Inicia detecção de silêncio
+                startSilenceDetection(stream);
+            } catch (err) {
+                setStatus('⚠️ Permissão de microfone negada');
+                console.error(err);
+            }
+        }
+
+        function stopRecording() {
+            stopSilenceDetection();
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            isRecording = false;
+            btnRecord.classList.remove('recording');
+            btnRecord.textContent = '🎤';
+            btnRecord.disabled = true;
+            btnSkip.disabled = true;
+            setStatus('<span class="spinner"></span> Enviando áudio...');
+        }
+
+        // ---- Silence Detection (Web Audio API) ----
+        function startSilenceDetection(stream) {
+            hasSpokeOnce = false;
+            silenceTimer = null;
+
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaStreamSource(stream);
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 512;
+            source.connect(analyser);
+
+            const dataArray = new Uint8Array(analyser.fftSize);
+
+            function checkVolume() {
+                if (!isRecording) return;
+
+                analyser.getByteTimeDomainData(dataArray);
+
+                // Calcula RMS do sinal
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) {
+                    const val = (dataArray[i] - 128) / 128;
+                    sum += val * val;
+                }
+                const rms = Math.sqrt(sum / dataArray.length) * 100;
+
+                if (rms > SILENCE_THRESHOLD) {
+                    // Usuário está falando
+                    hasSpokeOnce = true;
+                    if (silenceTimer) {
+                        clearTimeout(silenceTimer);
+                        silenceTimer = null;
+                    }
+                    setStatus('🔴 Gravando...');
+                } else if (hasSpokeOnce && !silenceTimer) {
+                    // Silêncio detectado após falar — inicia timer de 2s
+                    silenceTimer = setTimeout(() => {
+                        if (isRecording) {
+                            setStatus('Silêncio detectado, finalizando...');
+                            stopRecording();
+                        }
+                    }, SILENCE_TIMEOUT_MS);
+                }
+
+                requestAnimationFrame(checkVolume);
+            }
+
+            checkVolume();
+        }
+
+        function stopSilenceDetection() {
+            if (silenceTimer) {
+                clearTimeout(silenceTimer);
+                silenceTimer = null;
+            }
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close().catch(() => {});
+            }
+            audioContext = null;
+            analyser = null;
+        }
+
+        function sendAudio() {
+            const blob = new Blob(audioChunks, { type: 'audio/webm' });
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const b64 = reader.result.split(',')[1];
+                socket.emit('audio_answer', {
+                    audio: b64,
+                    answer_text: currentAnswerText,
+                });
+            };
+            reader.readAsDataURL(blob);
+        }
+
+        // ---- Navigation ----
+        function skipCard() {
+            socket.emit('skip_card');
+            setStatus('Pulando...');
+        }
+
+        function nextCard() {
+            socket.emit('next_card');
+            setStatus('Carregando próximo card...');
+        }
+    </script>
+</body>
+</html>

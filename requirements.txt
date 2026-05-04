@@ -10,3 +10,5 @@ PyQtWebEngine
 qtpy
 torch>=2.2.0
 silero-vad
+flask>=3.0
+flask-socketio>=5.3

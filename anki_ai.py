@@ -15,8 +15,7 @@ from html2text import html2text
 def strip_images_from_text(html_text):
     """Remove tags <img> do HTML antes de converter para texto (TTS/avaliação)."""
     return re.sub(r'<img[^>]*>', '', html_text, flags=re.IGNORECASE)
-import webview
-import pyaudio
+
 import torch
 from silero_vad import load_silero_vad
 import asyncio
@@ -29,51 +28,34 @@ log.setLevel(logging.DEBUG)
 logging.basicConfig()
 
 
-# Forçar Qt no pywebview (pula tentativa de GTK) e suprimir warning Wayland
-os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-
-TEST = len(sys.argv) > 1 and sys.argv[1] == "noaudio"
-
-# Audio settings
-SAMPLE_RATE = 16000
-CHUNK = int(SAMPLE_RATE / 10)
-num_samples = 512  # silero-vad pip exige 512 para 16000 Hz (ou 256 para 8000 Hz)
-# Suprimir mensagens ALSA/JACK durante inicialização do PyAudio
-_devnull = os.open(os.devnull, os.O_WRONLY)
-_old_stderr = os.dup(2)
-os.dup2(_devnull, 2)
-os.close(_devnull)
-audio = pyaudio.PyAudio()
-os.dup2(_old_stderr, 2)  # Restaura stderr
-os.close(_old_stderr)
-
 # --- Configuração do LLM ---
-# Opção 1 (padrão): Ollama local — instale com: curl -fsSL https://ollama.com/install.sh | sh
-#                   depois: ollama pull llama3.2:3b
-# Opção 2: Gemini API — descomente as linhas abaixo e comente o bloco ollama
 import ollama as ollama_client
 OLLAMA_MODEL = "qwen2.5:3b"
 
-# Para usar Gemini em vez de Ollama, descomente:
-# from google import genai as _genai
-# _gemini_client = _genai.Client(api_key=GEMINI_KEY)
-# GEMINI_MODEL = "gemini-2.0-flash-lite"
-
 # Voz neural em PT-BR (Microsoft Edge TTS)
-# Opções: pt-BR-FranciscaNeural (formal), pt-BR-ThalitaNeural (casual/jovem)
 TTS_VOICE = "pt-BR-ThalitaNeural"
 
+# Audio settings (usados por desktop e web)
+SAMPLE_RATE = 16000
+CHUNK = int(SAMPLE_RATE / 10)
+num_samples = 512  # silero-vad pip exige 512 para 16000 Hz
 
-if not TEST:
-    # Takes about 0.5 seconds, tiny.en is about 1.5s on slower machines
-    model = WhisperModel(
-        "medium",  # int8 é ~2x mais rápido que float32 com qualidade similar
-        device="cpu",
-        compute_type="int8",
-    )
+# Modelos carregados sob demanda (evita carregar ao importar)
+whisper_model = None
+vad_model = None
 
-    # Para detecção de voz (VAD) — usa pacote pip silero-vad
-    vad_model = load_silero_vad()
+
+def ensure_models_loaded():
+    """Carrega modelos Whisper e VAD se ainda não carregados."""
+    global whisper_model, vad_model
+    if whisper_model is None:
+        whisper_model = WhisperModel(
+            "medium",
+            device="cpu",
+            compute_type="int8",
+        )
+    if vad_model is None:
+        vad_model = load_silero_vad()
 
 
 def confidence(chunk):
@@ -86,14 +68,15 @@ def confidence(chunk):
     if abs_max > 0:
         audio_float32 *= 1 / 32768
     audio_float32 = audio_float32.squeeze()
-    return vad_model(torch.from_numpy(audio_float32), SAMPLE_RATE).item()
+    return vad_model(torch.from_numpy(audio_float32), SAMPLE_RATE).item()  # type: ignore
 
 
 def transcribe(audio_data):
     """
     Usa Whisper para transcrever áudio.
     """
-    audio_data = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
+    if isinstance(audio_data, bytes):
+        audio_data = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
     # Prompt com vocabulário naval/marítimo para guiar o modelo
     MARITIME_PROMPT = (
         "rebocador, rebocadores, propulsão, propulsores, azimutal, azimutais, "
@@ -101,8 +84,12 @@ def transcribe(audio_data):
         "convés, calado, bolina, reboque, cabo de reboque, "
         "tubulão, kort, manobra portuária, força de tiro"
     )
-    segments, _ = model.transcribe(
-        audio_data / np.max(audio_data),
+    ensure_models_loaded()
+    max_val = np.max(np.abs(audio_data))
+    if max_val > 0:
+        audio_data = audio_data / max_val
+    segments, _ = whisper_model.transcribe(
+        audio_data,
         language="pt",
         beam_size=7,
         without_timestamps=True,
@@ -112,7 +99,7 @@ def transcribe(audio_data):
     return "".join(x.text for x in segments)
 
 
-def transcribe_answer():
+def transcribe_answer(audio_interface=None):
     """
     Captura áudio do microfone e transcreve.
 
@@ -121,10 +108,14 @@ def transcribe_answer():
     - Se o usuário parar por 0.8s, transcreve o trecho
     - Se não falar por 2s, finaliza a transcrição.
     """
-    if TEST:
+    import pyaudio
+
+    if audio_interface is None:
         return input("Sua resposta: ")
 
-    stream = audio.open(
+    ensure_models_loaded()
+
+    stream = audio_interface.open(
         format=pyaudio.paInt16,
         channels=1,
         rate=SAMPLE_RATE,
@@ -189,9 +180,6 @@ def tts(text):
     Converte texto em fala com streaming Edge TTS.
     O áudio começa a tocar em ~300ms sem esperar o arquivo completo.
     """
-    if TEST:
-        return log.debug(f"[TTS] {text}")
-
     async def _stream():
         communicate = edge_tts.Communicate(text, TTS_VOICE)
         proc = subprocess.Popen(
@@ -208,6 +196,18 @@ def tts(text):
             proc.wait()
 
     asyncio.run(_stream())
+
+
+async def tts_to_bytes(text):
+    """
+    Gera áudio TTS e retorna como bytes MP3 (para envio via WebSocket).
+    """
+    communicate = edge_tts.Communicate(text, TTS_VOICE)
+    audio_chunks = []
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_chunks.append(chunk["data"])
+    return b"".join(audio_chunks)
 
 
 def strip_punctuation_for_tts(text):
@@ -280,18 +280,17 @@ def evaluate_response(question, answer, user_response):
 
 
 def main_backend(window):
+    """Loop principal da versão desktop (pywebview)."""
     collection = Collection(ANKI_PATH)
-    media_dir = collection.media.dir()  # Ex: ~/.local/share/Anki2/.../collection.media
+    media_dir = collection.media.dir()
 
     def display_html(html):
-        # Injeta <base> para que imagens relativas do Anki sejam encontradas
         base_tag = f'<base href="file://{media_dir}/">'
         html_with_base = base_tag + html
         window.evaluate_js(f"window.updateHtml(String.raw`{html_with_base}`);")
 
     try:
         while current_card := collection.sched.getCard():
-            # TODO: handle cloze cards
             if "basic" not in current_card.note_type()["name"].lower():
                 log.debug("Pulando card cloze")
                 collection.sched.bury_cards([current_card.id])
@@ -299,16 +298,13 @@ def main_backend(window):
 
             (question, answer_html) = current_card.note().fields
 
-            # Pular cards cuja RESPOSTA contenha imagens
             if re.search(r'<img', answer_html, re.IGNORECASE):
                 log.debug("Pulando card com imagem na resposta")
                 collection.sched.bury_cards([current_card.id])
                 continue
 
-            # Texto limpo para TTS e avaliação (sem tags de imagem da pergunta)
             answer_text = html2text(strip_images_from_text(answer_html)).strip()
 
-            # Pular cards com LaTeX renderizado (imagens de fórmulas)
             if "latex" in answer_text.lower():
                 log.debug("Pulando card com LaTeX renderizado")
                 collection.sched.bury_cards([current_card.id])
@@ -317,8 +313,8 @@ def main_backend(window):
             display_html(current_card.render_output(browser=True).question_and_style())
             tts(make_latex_speakable(question))
 
-            current_card.timer_started = time.time()  # Inicia timer para pontuação
-            user_response = transcribe_answer()
+            current_card.timer_started = time.time()
+            user_response = transcribe_answer(_desktop_audio)
 
             if "skip card" in user_response.lower():
                 collection.sched.bury_cards([current_card.id])
@@ -329,7 +325,6 @@ def main_backend(window):
             else:
                 score, feedback = evaluate_response(question, answer_text, user_response)
 
-            # Pisca a tela de vermelho ou verde dependendo da pontuação
             window.evaluate_js(
                 f"window.flashScreen('{'#CC020255' if score < 4 else '#02CC0255'}');"
             )
@@ -337,14 +332,12 @@ def main_backend(window):
             collection.sched.answerCard(current_card, score)
 
             if score == 4:
-                # Acertou: elogiar e dar reforço com o feedback do LLM
                 elogio = "Muito bom, acertou!"
                 if feedback:
                     tts(f"{elogio} {feedback}")
                 else:
                     tts(elogio)
             else:
-                # Errou: uma fala natural combinando feedback + resposta correta
                 answer_spoken = strip_punctuation_for_tts(answer_text)
                 correcao = f"Você errou. {feedback} A resposta correta é: {answer_spoken}" if feedback else f"Você errou. A resposta correta é: {answer_spoken}"
                 display_html(
@@ -357,6 +350,23 @@ def main_backend(window):
 
 
 if __name__ == "__main__":
+    import webview
+    import pyaudio
+
+    # Forçar Qt no pywebview (pula tentativa de GTK) e suprimir warning Wayland
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+
+    # Suprimir mensagens ALSA/JACK durante inicialização do PyAudio
+    _devnull = os.open(os.devnull, os.O_WRONLY)
+    _old_stderr = os.dup(2)
+    os.dup2(_devnull, 2)
+    os.close(_devnull)
+    _desktop_audio = pyaudio.PyAudio()
+    os.dup2(_old_stderr, 2)
+    os.close(_old_stderr)
+
+    ensure_models_loaded()
+
     window = webview.create_window(
         "Anki Voice Assistant",
         html=open("display_card.html", "r").read(),
