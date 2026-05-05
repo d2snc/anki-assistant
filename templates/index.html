@@ -454,10 +454,11 @@
         let audioQueue = [];
         let isPlayingAudio = false;
         let globalAudio = new Audio();
+        let beepAudio = new Audio('data:audio/wav;base64,UklGRtQEAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YbAEAACA0PzvrlkWAyp5yvnxtWEbAyVxwvb0vGkhBCFpu/P1wnEmBR1itO/3yHktBxlbrOr3zYAzCRZUpeb40oc6DBRNneH3149ADxFHltv325ZHEhBBjtb1351OFg87h9D04qRVGg42gMry5apdHw4xecPv6LBkJA4tcr3s6rZrKQ8pa7bp67xyLhAlZK/l7MF5NBIiXqnh7caAOhQfWKLd7cuGQBYdUpvY7c+NRhkbTJTT7NOUTBwaR43O69aaUyAZQobJ6dmgWSMYPYDD59ymYCgYOXq95d6sZywZNXO34uCxbTEZMW2x3+G2dDYaLmer3OK7ejscK2Gl2OLAgEAeKVye1OPEhkYgJ1aY0OLHjEwjJVGSy+HLklEmJEyMxuDOmFcpI0iGwd/QnV0tI0SAvN3TomMxI0B7t9vVp2k1Izx1sdjWrG85JDlvrNXXsXU+JTZqptLYtXtCJzRloc/YuYBHKDJgm8vYvYVMKjBblsfYwItRLS9WkMPXw5BXMC5Sir/WxZVcMy1OhbrUyJphNi1KgLXSyZ9nOi1He7HQy6NsPS5EdqzOzKdxQS5BcafLzat2RTA/bKLIzq97SjE9aJ3FzrKATjM7Y5jCzrWEUjU6X5O+zbiJVzc5W467zLuOXDo4WIm3y72SYDw4VISzyr+XZT84UYCvyMCbakI4TnyqxsGebkY4THemxMKic0k5SnOiwsOleE06SG+dv8OpfFE8RmuZvMOrgFU9RGeVucOuhFk/Q2SQtsKwiF1BQ2CMs8KyjGFDQl2Ir8G0kGVGQluErL+2k2lJQliAqL63l21LQlZ9pLy4mnFOQ1R5oLq4nXVSRFJ1nbi5oHlVRVBymbW5on1YRk9ulbO5pYBbSE5rkbC5p4NfSU1ojq24qYdiS0xmiqq3qopmTUxjhqe2rI1pT0xhg6S1rZBtUkxfgKGzrpNwVE1dfZ6yrpV0V01bepuwr5h3Wk5ad5iur5p6XE9ZdJSsr5x9X1FYcpGqrp6AYlJXb46nrqCCZVNXbYulraGFaFVWa4iirKKIa1dWaYWgq6OKbllWZ4KdqqSNcVtXZYCaqaSPdF1XZH6Yp6WRdmBYY3uVpqWTeWJZYnmSpKWUfGRaYXeQoqWWfmdbYXWNoKSXgGlcYHOLnqSYgmteYHGInKOZhG5fYHCGmqKahnBhYG6EmKGaiHJjYW2ClqCbiXVkYWyAlJ6bi3dmYmt/kp2bjHloY2t9j5ybjntqY2p7jZqbj31sZGp6i5makH9uZmp4iZeakIBwZ2p3iJWZkYFyaGp2hpSYkYNzaWp1hJKXkoR1a2p0gpCWkoV3bGtzgY+VkoZ5bmxzgI2Ukod6b2xzf4uTkoh8cW1yfoqSkYl9cm5yfYiQkYl+dG9yfIePkIl/dXBze4WOj4qAdnFze4SMj4qAeHJzeoOLjoqBeXN0eoKKjYqCenV0eoGJjImDe3Z1eoCHi4mDfHd2eoCGioiDfXh3eoCFiYiDfnl4en+EiIeDf3p5en+DhoeDgHt6e3+ChYaDgHx7e3+ChIWDgH18fH+Bg4SDgH59fX+AgoOCgH99fn+AgoKBgH9+fn+AgYGBgIB/f4CAgICAgICAgIA=');
 
-        // Silence detection
-        let audioContext;
-        let analyser;
+        // Silence detection & Mic Stream
+        let globalStream = null;
+        let globalAnalyser = null;
         let silenceTimer = null;
         let hasSpokeOnce = false;
         const SILENCE_THRESHOLD = 15; // RMS volume abaixo disso = silêncio
@@ -586,11 +587,38 @@
         }
 
         // ---- Socket.IO ----
-        function startSession(deckId) {
-            // "Destrava" o elemento de áudio global no primeiro toque do usuário
+        async function startSession(deckId) {
+            // "Destrava" os elementos de áudio no primeiro toque do usuário
             globalAudio.play().catch(() => {});
+            beepAudio.play().catch(() => {});
+            
+            // Destrava o contexto de áudio avançado e pega a permissão do microfone de forma global!
+            setStatus('Iniciando microfone...');
+            if (!window.globalAudioContext) {
+                window.globalAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (window.globalAudioContext.state === 'suspended') {
+                window.globalAudioContext.resume();
+            }
+            
+            try {
+                if (!globalStream) {
+                    globalStream = await navigator.mediaDevices.getUserMedia({
+                        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
+                    });
+                    const source = window.globalAudioContext.createMediaStreamSource(globalStream);
+                    globalAnalyser = window.globalAudioContext.createAnalyser();
+                    globalAnalyser.fftSize = 512;
+                    source.connect(globalAnalyser);
+                }
+            } catch(e) {
+                console.error("Microfone error:", e);
+                setStatus('⚠️ Erro: Microfone não autorizado');
+                return;
+            }
+
             showState('card');
-            setStatus('Conectando...');
+            setStatus('Conectando ao servidor...');
 
             socket = io({ transports: ['websocket'] });
 
@@ -613,11 +641,8 @@
 
             socket.on('question_tts', (data) => {
                 playAudioBase64(data.audio, () => {
-                    // Toca um beep e auto-inicia gravação após terminar de ler a pergunta
-                    playBeep();
-                    setTimeout(() => {
-                        startRecording();
-                    }, 400); // Espera o beep terminar para não captar no microfone
+                    // Auto-inicia gravação imediatamente após a pergunta
+                    startRecording();
                 });
             });
 
@@ -680,22 +705,9 @@
         // ---- Audio Feedback ----
         function playBeep() {
             try {
-                const ctx = new (window.AudioContext || window.webkitAudioContext)();
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(880, ctx.currentTime); // Nota A5
-                
-                gain.gain.setValueAtTime(0.1, ctx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-                
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                
-                osc.start();
-                osc.stop(ctx.currentTime + 0.3);
-            } catch(e) { console.warn("Beep failed", e); }
+                beepAudio.currentTime = 0;
+                beepAudio.play().catch(e => console.warn("Beep failed", e));
+            } catch(e) {}
         }
 
         // ---- Recording ----
@@ -709,17 +721,19 @@
 
         async function startRecording() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        channelCount: 1,
-                        sampleRate: 16000,
-                        echoCancellation: true,
-                        noiseSuppression: true,
+                if (!globalStream || !globalStream.active) {
+                    globalStream = await navigator.mediaDevices.getUserMedia({
+                        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
+                    });
+                    
+                    if (window.globalAudioContext && globalAnalyser) {
+                        const source = window.globalAudioContext.createMediaStreamSource(globalStream);
+                        source.connect(globalAnalyser);
                     }
-                });
+                }
 
                 audioChunks = [];
-                mediaRecorder = new MediaRecorder(stream, {
+                mediaRecorder = new MediaRecorder(globalStream, {
                     mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
                         ? 'audio/webm;codecs=opus'
                         : 'audio/webm'
@@ -731,12 +745,13 @@
 
                 mediaRecorder.onstop = () => {
                     stopSilenceDetection();
-                    stream.getTracks().forEach(t => t.stop());
+                    // Não encerramos as trilhas do globalStream aqui, mantemos aberto!
                     sendAudio();
                 };
 
                 mediaRecorder.start();
                 isRecording = true;
+                playBeep(); // Toca o bipe exatamente quando o microfone já está pronto e gravando
                 btnRecord.classList.add('recording');
                 btnRecord.textContent = '⏹';
                 btnRecord.disabled = false;
@@ -744,10 +759,10 @@
                 setStatus('Gravando... fale sua resposta');
 
                 // Inicia detecção de silêncio
-                startSilenceDetection(stream);
+                startSilenceDetection();
             } catch (err) {
-                setStatus('⚠️ Permissão de microfone negada');
-                console.error(err);
+                setStatus('⚠️ Erro na gravação: ' + (err.message || err.name));
+                console.error("Recording error:", err);
             }
         }
 
@@ -765,22 +780,17 @@
         }
 
         // ---- Silence Detection (Web Audio API) ----
-        function startSilenceDetection(stream) {
+        function startSilenceDetection() {
             hasSpokeOnce = false;
             silenceTimer = null;
 
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const source = audioContext.createMediaStreamSource(stream);
-            analyser = audioContext.createAnalyser();
-            analyser.fftSize = 512;
-            source.connect(analyser);
-
-            const dataArray = new Uint8Array(analyser.fftSize);
+            if (!globalAnalyser) return;
+            const dataArray = new Uint8Array(globalAnalyser.fftSize);
 
             function checkVolume() {
                 if (!isRecording) return;
 
-                analyser.getByteTimeDomainData(dataArray);
+                globalAnalyser.getByteTimeDomainData(dataArray);
 
                 // Calcula RMS do sinal
                 let sum = 0;
@@ -819,11 +829,6 @@
                 clearTimeout(silenceTimer);
                 silenceTimer = null;
             }
-            if (audioContext && audioContext.state !== 'closed') {
-                audioContext.close().catch(() => {});
-            }
-            audioContext = null;
-            analyser = null;
         }
 
         function sendAudio() {

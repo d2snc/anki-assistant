@@ -80,8 +80,30 @@ def convert_webm_to_pcm(webm_bytes):
 
 def send_tts(text, event="tts_audio"):
     """Gera TTS e envia áudio MP3 via WebSocket."""
-    audio_bytes = asyncio.run(tts_to_bytes(text))
-    emit(event, {"audio": base64.b64encode(audio_bytes).decode()})
+    import queue
+    import threading
+    q = queue.Queue()
+    
+    def _worker():
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            res = loop.run_until_complete(tts_to_bytes(text))
+            q.put(("ok", res))
+        except Exception as e:
+            q.put(("error", e))
+        finally:
+            loop.close()
+            
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+    
+    status, result = q.get()
+    if status == "error":
+        raise result
+        
+    emit(event, {"audio": base64.b64encode(result).decode()})
 
 
 def advance_card():
@@ -120,7 +142,12 @@ def advance_card():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    from flask import make_response
+    resp = make_response(render_template("index.html"))
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.route("/media/<path:filename>")
