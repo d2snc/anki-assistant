@@ -153,6 +153,23 @@ def get_decks_api():
     return {"decks": decks}
 
 
+@app.route("/sync", methods=["POST"])
+def sync_api():
+    user = os.getenv("ANKIWEB_USER")
+    pw = os.getenv("ANKIWEB_PASSWORD")
+    if not user or not pw:
+        return {"success": False, "message": "Credenciais não configuradas no .env"}, 400
+    
+    col = get_collection()
+    try:
+        auth = col.sync_login(user, pw, None)
+        col.sync_collection(auth, sync_media=True)
+        return {"success": True, "message": "Sincronização concluída!"}
+    except Exception as e:
+        log.error(f"Erro na sincronização: {e}")
+        return {"success": False, "message": str(e)}, 500
+
+
 @socketio.on("connect")
 def handle_connect():
     log.info("Cliente conectado")

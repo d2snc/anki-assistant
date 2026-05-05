@@ -33,6 +33,11 @@ else:
     print("Crie um arquivo .env usando o .env.example como modelo.\n")
     sys.exit(1)
 
+# Cliente exclusivo para OpenAI TTS (só inicializa se houver chave da OpenAI)
+openai_tts_client = None
+if os.getenv("OPENAI_API_KEY"):
+    openai_tts_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
 
 def strip_images_from_text(html_text):
     """Remove tags <img> do HTML antes de converter para texto (TTS/avaliação)."""
@@ -194,6 +199,22 @@ def tts(text):
     Converte texto em fala com streaming Edge TTS.
     O áudio começa a tocar em ~300ms sem esperar o arquivo completo.
     """
+    if openai_tts_client is not None:
+        try:
+            resp = openai_tts_client.audio.speech.create(
+                model="tts-1",
+                voice="alloy",
+                input=text
+            )
+            proc = subprocess.Popen(
+                ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "-i", "-"],
+                stdin=subprocess.PIPE,
+            )
+            proc.communicate(input=resp.content)
+            return
+        except Exception as e:
+            log.error(f"Erro no OpenAI TTS: {e}. Usando fallback (edge-tts)")
+
     async def _stream():
         communicate = edge_tts.Communicate(text, TTS_VOICE)
         proc = subprocess.Popen(
@@ -215,7 +236,19 @@ def tts(text):
 async def tts_to_bytes(text):
     """
     Gera áudio TTS e retorna como bytes MP3 (para envio via WebSocket).
+    Usa OpenAI TTS se disponível (ultra-rápido), senão usa edge-tts.
     """
+    if openai_tts_client is not None:
+        try:
+            resp = openai_tts_client.audio.speech.create(
+                model="tts-1",
+                voice="alloy",
+                input=text
+            )
+            return resp.content
+        except Exception as e:
+            log.error(f"Erro no OpenAI TTS: {e}. Usando fallback (edge-tts)")
+
     communicate = edge_tts.Communicate(text, TTS_VOICE)
     audio_chunks = []
     async for chunk in communicate.stream():

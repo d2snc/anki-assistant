@@ -313,6 +313,18 @@
         #btn-start:hover {
             box-shadow: 0 0 24px var(--accent-glow);
         }
+        .btn-sync {
+            background: transparent;
+            color: var(--accent);
+            border: 1px solid var(--accent);
+            margin: 0 auto 24px;
+            font-size: 0.9rem;
+            padding: 8px 16px;
+        }
+        .btn-sync:hover:not(:disabled) {
+            background: var(--accent);
+            color: white;
+        }
 
         /* Deck List */
         .decks-list {
@@ -395,6 +407,7 @@
     <div id="card-area">
         <!-- Start screen -->
         <div id="start-screen">
+            <button id="btn-sync" class="btn btn-sync" onclick="syncAnki()">☁️ Sincronizar com AnkiWeb</button>
             <div class="emoji">🎙️</div>
             <h2>Anki Voice</h2>
             <p id="start-subtitle">Carregando seus decks...</p>
@@ -448,7 +461,7 @@
         let silenceTimer = null;
         let hasSpokeOnce = false;
         const SILENCE_THRESHOLD = 15; // RMS volume abaixo disso = silêncio
-        const SILENCE_TIMEOUT_MS = 2000; // 2 segundos de silêncio para parar
+        const SILENCE_TIMEOUT_MS = 1000; // 1 segundo de silêncio para parar
 
         // ---- DOM refs ----
         const startScreen = document.getElementById('start-screen');
@@ -551,6 +564,27 @@
             });
         }
 
+        async function syncAnki() {
+            const btn = document.getElementById('btn-sync');
+            btn.disabled = true;
+            btn.textContent = '⏳ Sincronizando...';
+            try {
+                const res = await fetch('/sync', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    btn.textContent = '✅ Sincronizado!';
+                } else {
+                    btn.textContent = '⚠️ Erro: ' + data.message;
+                }
+            } catch (e) {
+                btn.textContent = '⚠️ Erro de conexão';
+            }
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = '☁️ Sincronizar com AnkiWeb';
+            }, 4000);
+        }
+
         // ---- Socket.IO ----
         function startSession(deckId) {
             // "Destrava" o elemento de áudio global no primeiro toque do usuário
@@ -579,8 +613,11 @@
 
             socket.on('question_tts', (data) => {
                 playAudioBase64(data.audio, () => {
-                    // Auto-inicia gravação após terminar de ler a pergunta
-                    startRecording();
+                    // Toca um beep e auto-inicia gravação após terminar de ler a pergunta
+                    playBeep();
+                    setTimeout(() => {
+                        startRecording();
+                    }, 400); // Espera o beep terminar para não captar no microfone
                 });
             });
 
@@ -638,6 +675,27 @@
             socket.on('disconnect', () => {
                 setStatus('Desconectado do servidor');
             });
+        }
+
+        // ---- Audio Feedback ----
+        function playBeep() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(880, ctx.currentTime); // Nota A5
+                
+                gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+                
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                
+                osc.start();
+                osc.stop(ctx.currentTime + 0.3);
+            } catch(e) { console.warn("Beep failed", e); }
         }
 
         // ---- Recording ----
