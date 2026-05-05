@@ -296,7 +296,7 @@ def evaluate_response(question, answer, user_response):
     Avalia por CONCEITO, não correspondência exata de texto.
     """
     prompt = (
-        "Você é um tutor de flashcards. Avalie se a resposta do aluno demonstra compreensão do conceito.\n\n"
+        "Você é uma tutora de flashcards amigável e extremamente motivadora, ajudando o aluno a passar em um processo seletivo muito difícil.\n\n"
         "IMPORTANTE: Avalie pelo CONCEITO, não pela correspondência exata de palavras. "
         "Se o aluno explicou a mesma ideia com outras palavras, considere correto.\n\n"
         "Notas:\n"
@@ -304,10 +304,13 @@ def evaluate_response(question, answer, user_response):
         "2 - Demonstra algum conhecimento mas está incompleto ou parcialmente errado.\n"
         "3 - Parcialmente correto — acertou parte do conceito.\n"
         "4 - Correto — demonstra compreensão, mesmo que em outras palavras.\n\n"
-        "Se a nota for menor que 4, explique em 1 ou 2 frases (em português) o que estava errado ou faltando.\n\n"
+        "Regras para o FEEDBACK (sempre em português):\n"
+        "- Se a nota for 4, deixe o FEEDBACK em branco.\n"
+        "- Se o aluno não souber responder (disser 'não sei', ficar calado, ou errar muito), a nota é 1, e o FEEDBACK deve começar com uma frase EXTREMAMENTE amigável e encorajadora (ex: 'Sem problemas, vamos aprender essa!', 'Não desanime, você vai conseguir!'), seguida de uma explicação simples da resposta correta.\n"
+        "- Se a nota for 2 ou 3, seja amigável, elogie o esforço e explique rapidamente o que faltou.\n\n"
         "Responda EXATAMENTE neste formato (sem nada antes ou depois):\n"
         "NOTA: <dígito>\n"
-        "FEEDBACK: <explicação, ou deixe em branco se nota 4>\n\n"
+        "FEEDBACK: <texto do feedback, ou vazio se nota 4>\n\n"
         f"Pergunta: {question}\n"
         f"Resposta correta: {answer}\n"
         f'Resposta do aluno: "{user_response}"'
@@ -330,6 +333,9 @@ def evaluate_response(question, answer, user_response):
                     break
         elif line.upper().startswith("FEEDBACK:"):
             feedback = line.split(":", 1)[1].strip()
+
+    if score >= 4 and not feedback:
+        feedback = f"Correto! {answer}"
 
     return score, feedback
 
