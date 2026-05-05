@@ -57,19 +57,18 @@ def get_collection():
     return collection
 
 
-def convert_webm_to_pcm(webm_bytes):
-    """Converte áudio WebM/Opus do navegador para PCM 16kHz int16 via ffmpeg."""
+def convert_audio_to_wav(audio_bytes):
+    """Converte áudio do navegador para WAV via ffmpeg, garantindo compatibilidade."""
     proc = subprocess.run(
         [
             "ffmpeg", "-y",
             "-i", "pipe:0",
             "-ar", str(SAMPLE_RATE),
             "-ac", "1",
-            "-f", "s16le",
-            "-acodec", "pcm_s16le",
+            "-f", "wav",
             "pipe:1",
         ],
-        input=webm_bytes,
+        input=audio_bytes,
         capture_output=True,
     )
     if proc.returncode != 0:
@@ -254,15 +253,23 @@ def handle_audio_answer(data):
     audio_webm = base64.b64decode(audio_b64)
 
     emit("status", {"message": "Transcrevendo..."})
+    eventlet.sleep(0)
+
+    # Converter para WAV via ffmpeg para evitar problemas de codec (ex: Safari/iOS)
+    audio_wav = convert_audio_to_wav(audio_webm)
+    if not audio_wav:
+        emit("error", {"message": "Erro interno ao processar áudio"})
+        return
 
     import io
-    webm_io = io.BytesIO(audio_webm)
-    webm_io.name = "audio.webm"
+    wav_io = io.BytesIO(audio_wav)
+    wav_io.name = "audio.wav"
 
-    # Transcreve usando API (suporta webm nativamente)
-    user_response = transcribe(webm_io)
+    # Transcreve usando API (agora com formato WAV padronizado)
+    user_response = transcribe(wav_io)
     log.debug(f"Transcrição: {user_response}")
     emit("transcription", {"text": user_response})
+    eventlet.sleep(0)
 
     # Verifica comandos de voz
     if "skip card" in user_response.lower():
@@ -273,6 +280,7 @@ def handle_audio_answer(data):
 
     # Avalia
     emit("status", {"message": "Avaliando..."})
+    eventlet.sleep(0)
     (question, _) = card.note().fields
 
     if "nao sei" in user_response.lower() or "não sei" in user_response.lower():

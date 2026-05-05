@@ -113,19 +113,12 @@ def transcribe(file_obj):
 
 def transcribe_answer(audio_interface=None):
     """
-    Captura áudio do microfone e transcreve.
-
-    Algoritmo de escuta:
-    - Ouve continuamente após o usuário começar a falar
-    - Se o usuário parar por 0.8s, transcreve o trecho
-    - Se não falar por 2s, finaliza a transcrição.
+    Captura áudio do microfone por 8 segundos fixos e transcreve.
     """
     import pyaudio
 
     if audio_interface is None:
         return input("Sua resposta: ")
-
-    ensure_models_loaded()
 
     stream = audio_interface.open(
         format=pyaudio.paInt16,
@@ -135,66 +128,36 @@ def transcribe_answer(audio_interface=None):
         frames_per_buffer=CHUNK,
     )
 
-    log.debug("Ouvindo...")
+    log.info("Gravando por 8 segundos...")
+    
+    frames = []
+    num_iterations = int((SAMPLE_RATE / CHUNK) * 8)
+    
+    for _ in range(num_iterations):
+        audio_chunk = stream.read(CHUNK, exception_on_overflow=False)
+        frames.append(audio_chunk)
 
-    prev_confidence = []
-    data = []
-    transcription = ""
-
-    stop = threading.Event()
-    last_spoken = [time.time()]
-
-    def threaded_listen():
-        while not stop.is_set():
-            audio_chunk = stream.read(num_samples)
-            chunk_confidence = confidence(audio_chunk)
-            prev_confidence.append(chunk_confidence)
-
-            mid_phrase = np.sum(prev_confidence[-5:]) > 5 * 0.7
-            currently_speaking = chunk_confidence > 0.75
-
-            if mid_phrase or currently_speaking:
-                data.append(audio_chunk)
-
-            if currently_speaking:
-                last_spoken[0] = time.time()
-
-    threading.Thread(target=threaded_listen, daemon=True).start()
-
-    while not len(data):
-        # Aguarda usuário começar a falar
-        time.sleep(0.1)
-
-    while True:
-        speaking_gap = time.time() - last_spoken[0]
-
-        if speaking_gap < 0.8:
-            time.sleep(0.8 - speaking_gap)
-        elif speaking_gap < 2.0 and len(data):
-            log.debug(f"Transcrevendo... gap={speaking_gap:.1f}s, chunks={len(data)}")
-            stt_start = time.time()
-            next_chunk = b"".join(data)
-            data.clear()
-            
-            wav_io = io.BytesIO()
-            with wave.open(wav_io, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(SAMPLE_RATE)
-                wf.writeframes(next_chunk)
-            wav_io.seek(0)
-            wav_io.name = "audio.wav"
-            
-            transcription += transcribe(wav_io) + " "
-            log.debug(f"STT em {time.time() - stt_start:.2f}s")
-        else:  # speaking_gap > 2.0
-            log.info("Transcrição finalizada")
-            stop.set()
-            data.clear()  # Descarta áudio acumulado durante transcrição longa
-            log.debug(transcription)
-            return transcription
-
-    stop.set()
+    log.info("Gravação finalizada. Transcrevendo...")
+    
+    next_chunk = b"".join(frames)
+    
+    wav_io = io.BytesIO()
+    with wave.open(wav_io, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(next_chunk)
+    wav_io.seek(0)
+    wav_io.name = "audio.wav"
+    
+    transcription = transcribe(wav_io)
+    log.debug(f"Transcrição finalizada")
+    log.debug(transcription)
+    
+    stream.stop_stream()
+    stream.close()
+    
+    return transcription
 
 
 def tts(text):

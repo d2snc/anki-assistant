@@ -456,13 +456,11 @@
         let globalAudio = new Audio();
         let beepAudio = new Audio('data:audio/wav;base64,UklGRtQEAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YbAEAACA0PzvrlkWAyp5yvnxtWEbAyVxwvb0vGkhBCFpu/P1wnEmBR1itO/3yHktBxlbrOr3zYAzCRZUpeb40oc6DBRNneH3149ADxFHltv325ZHEhBBjtb1351OFg87h9D04qRVGg42gMry5apdHw4xecPv6LBkJA4tcr3s6rZrKQ8pa7bp67xyLhAlZK/l7MF5NBIiXqnh7caAOhQfWKLd7cuGQBYdUpvY7c+NRhkbTJTT7NOUTBwaR43O69aaUyAZQobJ6dmgWSMYPYDD59ymYCgYOXq95d6sZywZNXO34uCxbTEZMW2x3+G2dDYaLmer3OK7ejscK2Gl2OLAgEAeKVye1OPEhkYgJ1aY0OLHjEwjJVGSy+HLklEmJEyMxuDOmFcpI0iGwd/QnV0tI0SAvN3TomMxI0B7t9vVp2k1Izx1sdjWrG85JDlvrNXXsXU+JTZqptLYtXtCJzRloc/YuYBHKDJgm8vYvYVMKjBblsfYwItRLS9WkMPXw5BXMC5Sir/WxZVcMy1OhbrUyJphNi1KgLXSyZ9nOi1He7HQy6NsPS5EdqzOzKdxQS5BcafLzat2RTA/bKLIzq97SjE9aJ3FzrKATjM7Y5jCzrWEUjU6X5O+zbiJVzc5W467zLuOXDo4WIm3y72SYDw4VISzyr+XZT84UYCvyMCbakI4TnyqxsGebkY4THemxMKic0k5SnOiwsOleE06SG+dv8OpfFE8RmuZvMOrgFU9RGeVucOuhFk/Q2SQtsKwiF1BQ2CMs8KyjGFDQl2Ir8G0kGVGQluErL+2k2lJQliAqL63l21LQlZ9pLy4mnFOQ1R5oLq4nXVSRFJ1nbi5oHlVRVBymbW5on1YRk9ulbO5pYBbSE5rkbC5p4NfSU1ojq24qYdiS0xmiqq3qopmTUxjhqe2rI1pT0xhg6S1rZBtUkxfgKGzrpNwVE1dfZ6yrpV0V01bepuwr5h3Wk5ad5iur5p6XE9ZdJSsr5x9X1FYcpGqrp6AYlJXb46nrqCCZVNXbYulraGFaFVWa4iirKKIa1dWaYWgq6OKbllWZ4KdqqSNcVtXZYCaqaSPdF1XZH6Yp6WRdmBYY3uVpqWTeWJZYnmSpKWUfGRaYXeQoqWWfmdbYXWNoKSXgGlcYHOLnqSYgmteYHGInKOZhG5fYHCGmqKahnBhYG6EmKGaiHJjYW2ClqCbiXVkYWyAlJ6bi3dmYmt/kp2bjHloY2t9j5ybjntqY2p7jZqbj31sZGp6i5makH9uZmp4iZeakIBwZ2p3iJWZkYFyaGp2hpSYkYNzaWp1hJKXkoR1a2p0gpCWkoV3bGtzgY+VkoZ5bmxzgI2Ukod6b2xzf4uTkoh8cW1yfoqSkYl9cm5yfYiQkYl+dG9yfIePkIl/dXBze4WOj4qAdnFze4SMj4qAeHJzeoOLjoqBeXN0eoKKjYqCenV0eoGJjImDe3Z1eoCHi4mDfHd2eoCGioiDfXh3eoCFiYiDfnl4en+EiIeDf3p5en+DhoeDgHt6e3+ChYaDgHx7e3+ChIWDgH18fH+Bg4SDgH59fX+AgoOCgH99fn+AgoKBgH9+fn+AgYGBgIB/f4CAgICAgICAgIA=');
 
-        // Silence detection & Mic Stream
+        // Mic Stream and Recording Timer
         let globalStream = null;
         let globalAnalyser = null;
-        let silenceTimer = null;
-        let hasSpokeOnce = false;
-        const SILENCE_THRESHOLD = 25; // Aumentado para não confundir o ruído de fundo dos AirPods com fala
-        const SILENCE_TIMEOUT_MS = 1500; // 1.5 segundos de silêncio para parar
+        let recordingTimer = null;
+        const RECORDING_DURATION_MS = 8000; // 8 segundos de gravação padrão
 
         // ---- DOM refs ----
         const startScreen = document.getElementById('start-screen');
@@ -744,7 +742,7 @@
                 };
 
                 mediaRecorder.onstop = () => {
-                    stopSilenceDetection();
+                    stopRecordingTimer();
                     // Não encerramos as trilhas do globalStream aqui, mantemos aberto!
                     sendAudio();
                 };
@@ -758,8 +756,8 @@
                 btnSkip.disabled = true;
                 setStatus('Gravando... fale sua resposta');
 
-                // Inicia detecção de silêncio
-                startSilenceDetection();
+                // Inicia timer de gravação de 8 segundos
+                startRecordingTimer();
             } catch (err) {
                 setStatus('⚠️ Erro na gravação: ' + (err.message || err.name));
                 console.error("Recording error:", err);
@@ -767,7 +765,7 @@
         }
 
         function stopRecording() {
-            stopSilenceDetection();
+            stopRecordingTimer();
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                 mediaRecorder.stop();
             }
@@ -779,59 +777,32 @@
             setStatus('<span class="spinner"></span> Enviando áudio...');
         }
 
-        // ---- Silence Detection (Web Audio API) ----
-        function startSilenceDetection() {
-            hasSpokeOnce = false;
-            silenceTimer = null;
-
-            if (!globalAnalyser) return;
-            const dataArray = new Uint8Array(globalAnalyser.fftSize);
-
-            function checkVolume() {
-                if (!isRecording) return;
-
-                globalAnalyser.getByteTimeDomainData(dataArray);
-
-                // Calcula RMS do sinal
-                let sum = 0;
-                for (let i = 0; i < dataArray.length; i++) {
-                    const val = (dataArray[i] - 128) / 128;
-                    sum += val * val;
-                }
-                const rms = Math.sqrt(sum / dataArray.length) * 100;
-
-                if (rms > SILENCE_THRESHOLD) {
-                    // Usuário está falando
-                    hasSpokeOnce = true;
-                    if (silenceTimer) {
-                        clearTimeout(silenceTimer);
-                        silenceTimer = null;
-                    }
-                    setStatus('🔴 Gravando...');
-                } else if (hasSpokeOnce && !silenceTimer) {
-                    // Silêncio detectado após falar — inicia timer de 2s
-                    silenceTimer = setTimeout(() => {
-                        if (isRecording) {
-                            setStatus('Silêncio detectado, finalizando...');
-                            stopRecording();
-                        }
-                    }, SILENCE_TIMEOUT_MS);
-                }
-
-                requestAnimationFrame(checkVolume);
+        // ---- Recording Timer ----
+        function startRecordingTimer() {
+            if (recordingTimer) {
+                clearTimeout(recordingTimer);
             }
-
-            checkVolume();
+            setStatus('🔴 Gravando... (8s)');
+            recordingTimer = setTimeout(() => {
+                if (isRecording) {
+                    setStatus('Tempo esgotado, finalizando gravação...');
+                    stopRecording();
+                }
+            }, RECORDING_DURATION_MS);
         }
 
-        function stopSilenceDetection() {
-            if (silenceTimer) {
-                clearTimeout(silenceTimer);
-                silenceTimer = null;
+        function stopRecordingTimer() {
+            if (recordingTimer) {
+                clearTimeout(recordingTimer);
+                recordingTimer = null;
             }
         }
 
         function sendAudio() {
+            if (audioChunks.length === 0) {
+                setStatus('⚠️ Nenhum áudio gravado');
+                return;
+            }
             const blob = new Blob(audioChunks, { type: 'audio/webm' });
             const reader = new FileReader();
             reader.onloadend = () => {
