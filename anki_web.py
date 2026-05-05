@@ -117,24 +117,23 @@ def advance_card():
             current_card = None
             return None
 
-        if "basic" not in card.note_type()["name"].lower():
-            log.debug("Pulando card cloze")
-            col.sched.bury_cards([card.id])
-            continue
-
-        (question, answer_html) = card.note().fields
-
-        if re.search(r'<img', answer_html, re.IGNORECASE):
-            log.debug("Pulando card com imagem na resposta")
+        # Extrai pergunta e resposta dos campos
+        fields = card.note().fields
+        if len(fields) >= 2:
+            question_html = fields[0]
+            answer_html = fields[1]
+        elif len(fields) == 1:
+            question_html = fields[0]
+            answer_html = fields[0]
+        else:
             col.sched.bury_cards([card.id])
             continue
 
         answer_text = html2text(strip_images_from_text(answer_html)).strip()
+        question = html2text(strip_images_from_text(question_html)).strip()
 
-        if "latex" in answer_text.lower():
-            log.debug("Pulando card com LaTeX renderizado")
-            col.sched.bury_cards([card.id])
-            continue
+        if not answer_text:
+            log.debug("Card sem texto de resposta. Passando para o usuário mesmo assim.")
 
         current_card = card
         return card, question, answer_text
