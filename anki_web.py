@@ -117,15 +117,12 @@ def advance_card():
             current_card = None
             return None
 
-        # Extrai pergunta e resposta dos campos
-        fields = card.note().fields
-        if len(fields) >= 2:
-            question_html = fields[0]
-            answer_html = fields[1]
-        elif len(fields) == 1:
-            question_html = fields[0]
-            answer_html = fields[0]
-        else:
+        # Extrai pergunta e resposta já renderizadas (funciona para Cloze e qualquer formato customizado)
+        try:
+            question_html = card.question()
+            answer_html = card.answer()
+        except Exception as e:
+            log.error(f"Erro ao renderizar card {card.id}: {e}")
             col.sched.bury_cards([card.id])
             continue
 

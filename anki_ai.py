@@ -40,8 +40,11 @@ if os.getenv("OPENAI_API_KEY"):
 
 
 def strip_images_from_text(html_text):
-    """Remove tags <img> do HTML antes de converter para texto (TTS/avaliação)."""
-    return re.sub(r'<img[^>]*>', '', html_text, flags=re.IGNORECASE)
+    """Remove tags <img> e tags de áudio do Anki antes de converter para texto (TTS/avaliação)."""
+    text = re.sub(r'<img[^>]*>', '', html_text, flags=re.IGNORECASE)
+    text = re.sub(r'\[anki:play:[^\]]+\]', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\[sound:[^\]]+\]', '', text, flags=re.IGNORECASE)
+    return text
 
 import torch
 from silero_vad import load_silero_vad
