@@ -232,6 +232,7 @@ def strip_punctuation_for_tts(text):
     text = re.sub(r'[*_~`#]+', '', text)
     # Remove pontuação que não agrega ao áudio
     text = re.sub(r'[\-–—•,;:!?()\[\]{}<>/\\|@#^&+=]', ' ', text)
+    text = text.replace('\n', ' ')
     # Normaliza múltiplos espaços
     text = re.sub(r' +', ' ', text).strip()
     return text
@@ -338,7 +339,11 @@ def main_backend(window):
                 continue
 
             display_html(current_card.render_output(browser=True).question_and_style())
-            tts(make_latex_speakable(question))
+            speakable = make_latex_speakable(question)
+            speakable = strip_punctuation_for_tts(speakable)
+            if not speakable:
+                speakable = "Verifique a tela."
+            tts(speakable)
 
             current_card.timer_started = time.time()
             user_response = transcribe_answer(_desktop_audio)

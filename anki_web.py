@@ -233,6 +233,9 @@ def send_next_card():
 
     # Envia TTS da pergunta
     speakable = make_latex_speakable(question)
+    speakable = strip_punctuation_for_tts(speakable)
+    if not speakable:
+        speakable = "Verifique a tela."
     send_tts(speakable, "question_tts")
 
 
