@@ -90,6 +90,58 @@
             text-transform: uppercase;
         }
 
+        /* Stats bar (andamento da sessão: new/learn/due) */
+        #stats-bar {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        #stats-bar .stat {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            transition: background-color 0.3s ease, border-color 0.3s ease;
+        }
+        /* Realça a fila (new/learn/due) em que o card atual se encontra */
+        #stats-bar .stat.active {
+            background: var(--accent-glow);
+            border-color: var(--accent);
+        }
+        #stats-bar .stat.active .stat-label {
+            color: var(--text-secondary);
+        }
+        #stats-bar .stat-label {
+            font-size: 0.6rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+        }
+        #stats-bar .stat-val {
+            font-size: 1.05rem;
+            font-weight: 700;
+            font-family: monospace;
+            min-width: 1.2em;
+            text-align: right;
+        }
+
+        /* Baralho do card atual */
+        #current-deck {
+            margin-top: 8px;
+            text-align: center;
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            padding: 0 16px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
         /* Card area */
         #card-area {
             flex: 1;
@@ -402,6 +454,12 @@
 
     <header>
         <h1>Anki Voice Assistant</h1>
+        <div id="stats-bar" class="hidden">
+            <div class="stat" id="stat-box-new"><span class="stat-label">New</span><span id="stat-new" class="stat-val count-new">0</span></div>
+            <div class="stat" id="stat-box-learn"><span class="stat-label">Learn</span><span id="stat-learn" class="stat-val count-learn">0</span></div>
+            <div class="stat" id="stat-box-review"><span class="stat-label">Due</span><span id="stat-review" class="stat-val count-review">0</span></div>
+        </div>
+        <div id="current-deck" class="hidden"></div>
     </header>
 
     <div id="card-area">
@@ -475,6 +533,8 @@
         const sessionEnd = document.getElementById('session-end');
         const sessionEndMsg = document.getElementById('session-end-msg');
         const flashOverlay = document.getElementById('flash-overlay');
+        const statsBar = document.getElementById('stats-bar');
+        const currentDeck = document.getElementById('current-deck');
 
         // ---- Audio playback ----
         function playAudioBase64(b64, callback) {
@@ -512,6 +572,8 @@
             startScreen.classList.toggle('hidden', state !== 'start');
             cardWrapper.classList.toggle('hidden', state !== 'card' && state !== 'result');
             sessionEnd.classList.toggle('hidden', state !== 'end');
+            statsBar.classList.toggle('hidden', state !== 'card' && state !== 'result');
+            currentDeck.classList.toggle('hidden', state !== 'card' && state !== 'result');
 
             btnRecord.classList.toggle('hidden', state !== 'card');
             btnSkip.classList.toggle('hidden', state !== 'card');
@@ -623,6 +685,29 @@
             socket.on('connect', () => {
                 setStatus('Carregando cards...');
                 socket.emit('start_session', { deck_id: deckId });
+            });
+
+            socket.on('stats', (data) => {
+                document.getElementById('stat-new').textContent = data.new;
+                document.getElementById('stat-learn').textContent = data.learn;
+                document.getElementById('stat-review').textContent = data.review;
+
+                // Realça a fila em que o card atual está (new/learn/due)
+                const boxes = {
+                    new: document.getElementById('stat-box-new'),
+                    learn: document.getElementById('stat-box-learn'),
+                    review: document.getElementById('stat-box-review'),
+                };
+                Object.values(boxes).forEach(el => el.classList.remove('active'));
+                if (boxes[data.current_state]) {
+                    boxes[data.current_state].classList.add('active');
+                }
+
+                // Mostra em qual baralho está o card atual
+                if (data.current_deck) {
+                    currentDeck.textContent = '📚 ' + data.current_deck.replace(/::/g, ' › ');
+                    currentDeck.classList.remove('hidden');
+                }
             });
 
             socket.on('card_html', (data) => {

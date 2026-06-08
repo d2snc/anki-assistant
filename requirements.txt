@@ -14,3 +14,4 @@ silero-vad
 flask>=3.0
 flask-socketio>=5.3
 pyOpenSSL
+langdetect

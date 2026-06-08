@@ -8,6 +8,7 @@ Acesse:  http://<IP-do-PC>:5000  no navegador do celular
 
 import eventlet
 eventlet.monkey_patch()
+from eventlet import tpool
 
 import os
 import re
@@ -16,6 +17,7 @@ import asyncio
 import subprocess
 import logging
 import base64
+import unicodedata
 
 import numpy as np
 from flask import Flask, render_template, send_from_directory
@@ -28,9 +30,13 @@ from anki_ai import (
     ensure_models_loaded,
     transcribe,
     evaluate_response,
+    PASS_SCORE,
+    is_english,
+    TTS_VOICE_EN,
     make_latex_speakable,
     strip_punctuation_for_tts,
     strip_images_from_text,
+    get_prioritized_card,
     tts_to_bytes,
     SAMPLE_RATE,
 )
@@ -47,6 +53,8 @@ socketio = SocketIO(app, max_http_buffer_size=50 * 1024 * 1024)  # 50MB para áu
 collection = None
 media_dir = None
 current_card = None
+current_card_english = False  # True quando o card atual está em inglês
+current_question = None  # texto renderizado da pergunta do card atual (para avaliação)
 
 
 def get_collection():
@@ -77,52 +85,66 @@ def convert_audio_to_wav(audio_bytes):
     return proc.stdout
 
 
-def send_tts(text, event="tts_audio"):
-    """Gera TTS e envia áudio MP3 via WebSocket."""
-    import queue
-    import threading
-    q = queue.Queue()
-    
-    def _worker():
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            res = loop.run_until_complete(tts_to_bytes(text))
-            q.put(("ok", res))
-        except Exception as e:
-            q.put(("error", e))
-        finally:
-            loop.close()
-            
-    t = threading.Thread(target=_worker)
-    t.start()
-    t.join()
-    
-    status, result = q.get()
-    if status == "error":
-        raise result
-        
-    emit(event, {"audio": base64.b64encode(result).decode()})
+def send_tts(text, event="tts_audio", voice=None):
+    """Gera TTS e envia áudio MP3 via WebSocket.
+
+    O edge-tts roda em asyncio. Misturar um loop asyncio com o hub do eventlet
+    (que monkey-patcha o threading) provoca "Cannot run the event loop while
+    another loop is running" quando duas chamadas se intercalam. Por isso a
+    coroutine é executada via eventlet.tpool, que roda num thread de SO real e
+    isolado do hub, enquanto cede o controle para atender outros clientes.
+    """
+    audio = tpool.execute(lambda: asyncio.run(tts_to_bytes(text, voice=voice)))
+    emit(event, {"audio": base64.b64encode(audio).decode()})
+
+
+def is_basic_note(card):
+    """True se o card é de um note type Basic/Básico (frente/verso simples).
+
+    Normaliza acentos para que 'Básico' (Anki em português) também conte, e
+    cobre as variantes oficiais ('Basic (and reversed card)' etc.). Cloze e
+    outros note types são ignorados pela sessão de voz.
+    """
+    name = card.note_type()["name"]
+    name = unicodedata.normalize("NFKD", name)
+    name = "".join(c for c in name if not unicodedata.combining(c)).lower()
+    return "basic" in name
 
 
 def advance_card():
-    """Avança para o próximo card válido. Retorna (card, question, answer_text) ou None."""
+    """Avança para o próximo card estudável. Retorna (card, question, answer_text) ou None.
+
+    O Anki só permite responder o card que está no TOPO da fila (answer_card no
+    backend v3 rejeita qualquer outro com 'not at top of queue'). Por isso pegamos
+    sempre o card do topo, em vez de "espiar" um Basic mais à frente — o que fazia
+    o answerCard falhar em loop quando um Cloze/non-Basic ficava parado no topo.
+
+    Cards fora do escopo da sessão de voz (não-Basic) ou que não renderizam são
+    enterrados (bury) para a fila avançar: bury não altera intervalo/ease e o Anki
+    desenterra sozinho no dia seguinte. Resposta ERRADA nunca passa por aqui — ela
+    vai pra learn via Again no fluxo natural.
+    """
     global current_card
     col = get_collection()
 
     while True:
-        card = col.sched.getCard()
+        card = get_prioritized_card(col)  # sempre o topo real da fila
         if card is None:
             current_card = None
             return None
 
-        # Extrai pergunta e resposta já renderizadas (funciona para Cloze e qualquer formato customizado)
+        # Card fora de escopo no topo bloqueia todos atrás dele: enterra e avança.
+        if not is_basic_note(card):
+            col.sched.bury_cards([card.id])
+            continue
+
+        # Extrai pergunta e resposta já renderizadas (funciona para qualquer formato customizado)
         try:
             question_html = card.question()
             answer_html = card.answer()
         except Exception as e:
             log.error(f"Erro ao renderizar card {card.id}: {e}")
-            col.sched.bury_cards([card.id])
+            col.sched.bury_cards([card.id])  # remove o card quebrado do topo da fila
             continue
 
         answer_text = html2text(strip_images_from_text(answer_html)).strip()
@@ -208,8 +230,44 @@ def handle_start_session(data):
     send_next_card()
 
 
+# Mapeia a fila (queue)/tipo (type) do Anki para a categoria exibida na tela.
+# queue/type: 0=new, 1=learning, 2=review, 3=day-learn/relearn.
+_CARD_STATE = {0: "new", 1: "learn", 2: "review", 3: "learn"}
+
+
+def card_state(card):
+    """Retorna 'new', 'learn' ou 'review' conforme a fila do card atual.
+
+    Usa a fila (queue) como primário e o tipo (type) como fallback, já que
+    ambos compartilham a mesma codificação para as filas ativas.
+    """
+    state = _CARD_STATE.get(getattr(card, "queue", None))
+    if state is None:
+        state = _CARD_STATE.get(getattr(card, "type", 2), "review")
+    return state
+
+
+def emit_stats(card=None):
+    """Envia os contadores do deck (new/learn/review) e, quando há um card
+    ativo, em qual baralho e fila (new/learn/due) ele está."""
+    try:
+        new, learn, review = get_collection().sched.counts()
+    except Exception as e:
+        log.error(f"Erro ao obter contadores: {e}")
+        return
+    payload = {"new": new, "learn": learn, "review": review}
+    if card is not None:
+        # odid != 0 quando o card está num deck filtrado; nesse caso o deck
+        # "de verdade" do card é o original (odid).
+        deck_id = getattr(card, "odid", 0) or card.did
+        payload["current_deck"] = get_collection().decks.name(deck_id)
+        payload["current_state"] = card_state(card)
+    emit("stats", payload)
+
+
 def send_next_card():
     """Envia o próximo card para o cliente."""
+    global current_card_english, current_question
     result = advance_card()
     if result is None:
         emit("session_end", {"message": "Parabéns! Você terminou todos os cards de hoje!"})
@@ -217,6 +275,10 @@ def send_next_card():
 
     card, question, answer_text = result
     card.timer_started = time.time()
+    current_question = question
+
+    current_card_english = is_english(question)
+    voice = TTS_VOICE_EN if current_card_english else None
 
     # HTML do card com URLs de imagens apontando para /media/
     card_html = card.render_output(browser=True).question_and_style()
@@ -225,6 +287,7 @@ def send_next_card():
     # Corrige duplicação se já tiver caminho
     card_html = card_html.replace('src="/media//media/', 'src="/media/')
 
+    emit_stats(card)
     emit("card_html", {
         "html": card_html,
         "question_text": question,
@@ -236,13 +299,13 @@ def send_next_card():
     speakable = strip_punctuation_for_tts(speakable)
     if not speakable:
         speakable = "Verifique a tela."
-    send_tts(speakable, "question_tts")
+    send_tts(speakable, "question_tts", voice=voice)
 
 
 @socketio.on("audio_answer")
 def handle_audio_answer(data):
     """Recebe áudio da resposta do usuário, transcreve e avalia."""
-    global current_card
+    global current_card, current_card_english
 
     if current_card is None:
         emit("error", {"message": "Nenhum card ativo"})
@@ -269,48 +332,69 @@ def handle_audio_answer(data):
     wav_io.name = "audio.wav"
 
     # Transcreve usando API (agora com formato WAV padronizado)
-    user_response = transcribe(wav_io)
+    user_response = transcribe(wav_io, lang="en" if current_card_english else "pt")
     log.debug(f"Transcrição: {user_response}")
     emit("transcription", {"text": user_response})
     eventlet.sleep(0)
 
     # Verifica comandos de voz
     if "skip card" in user_response.lower():
-        col = get_collection()
-        col.sched.bury_cards([card.id])
+        get_collection().sched.bury_cards([card.id])
         send_next_card()
         return
 
     # Avalia
     emit("status", {"message": "Avaliando..."})
     eventlet.sleep(0)
-    (question, _) = card.note().fields
+    # Usa a pergunta já renderizada (funciona para qualquer note type, inclusive
+    # Cloze ou com 3+ campos, que quebravam ao desempacotar note().fields em 2).
+    question = current_question if current_question is not None else card.note().fields[0]
 
+    lang = "en" if current_card_english else "pt"
     if "nao sei" in user_response.lower() or "não sei" in user_response.lower():
         score, feedback = 1, ""
     else:
-        score, feedback = evaluate_response(question, answer_text, user_response)
+        score, feedback = evaluate_response(question, answer_text, user_response, lang=lang)
 
     log.info(f"Score: {score} | Feedback: {feedback!r}")
 
     col = get_collection()
-    col.sched.answerCard(card, score)
+    # Desacopla o veredito (acertou/errou) do botão do Anki (ease): acerto
+    # (score >= PASS_SCORE) mantém o ease do avaliador (Good/Easy) e respeita o
+    # intervalo; erro vira Again (1) para o Anki reaprender o card.
+    passed = score >= PASS_SCORE
+    ease = score if passed else 1
+    try:
+        col.sched.answerCard(card, ease)
+    except Exception as e:
+        log.error(f"Erro ao responder card: {e}")
+        send_next_card()
+        return
+    # Card consumido: zera o estado para que um audio_answer duplicado/atrasado
+    # (race de áudio ou rede) não tente respondê-lo de novo. O próximo card é
+    # definido por send_next_card (disparado pelo cliente após o feedback_tts).
+    current_card = None
 
     # Envia resultado
-    color = "#02CC0255" if score >= 4 else "#CC020255"
+    color = "#02CC0255" if passed else "#CC020255"
     emit("result", {
         "score": score,
         "feedback": feedback,
         "flash_color": color,
     })
 
-    # Gera e envia TTS do feedback
-    if score == 4:
-        elogio = "Muito bom, acertou!"
+    answer_spoken = strip_punctuation_for_tts(answer_text)
+    if passed:
+        if current_card_english:
+            elogio = f"Well done! The answer is: {answer_spoken}" if answer_spoken else "Well done!"
+        else:
+            elogio = f"Muito bom, acertou! A resposta é: {answer_spoken}" if answer_spoken else "Muito bom, acertou!"
         tts_text = f"{elogio} {feedback}" if feedback else elogio
     else:
-        answer_spoken = strip_punctuation_for_tts(answer_text)
-        tts_text = f"Você errou. {feedback} A resposta correta é: {answer_spoken}" if feedback else f"Você errou. A resposta correta é: {answer_spoken}"
+        if current_card_english:
+            tts_text = f"Wrong. {feedback} The correct answer is: {answer_spoken}" if feedback else f"Wrong. The correct answer is: {answer_spoken}"
+        else:
+            tts_text = f"Você errou. {feedback} A resposta correta é: {answer_spoken}" if feedback else f"Você errou. A resposta correta é: {answer_spoken}"
 
         # Envia HTML da resposta
         answer_html = card.render_output(browser=True).answer_and_style()
@@ -318,16 +402,23 @@ def handle_audio_answer(data):
         answer_html = answer_html.replace('src="/media//media/', 'src="/media/')
         emit("show_answer", {"html": answer_html})
 
-    send_tts(tts_text, "feedback_tts")
+    # Atualiza o painel imediatamente após responder: o card.load() feito por
+    # answerCard já deixou o card no estado novo (ex.: erro → fila 'learn'),
+    # então new/learn/due refletem a resposta sem esperar o próximo card.
+    emit_stats(card)
+
+    voice = TTS_VOICE_EN if current_card_english else None
+    send_tts(tts_text, "feedback_tts", voice=voice)
 
 
 @socketio.on("skip_card")
 def handle_skip_card():
-    """Enterra o card atual e avança."""
-    global current_card
+    """Pula o card atual enterrando-o (bury). Apenas "esconder na sessão" não
+    funciona: o card continuaria no topo da fila do Anki e bloquearia
+    ('not at top of queue') os cards atrás dele. Bury tira o card da frente da
+    fila sem mudar intervalo/ease, e o Anki o desenterra no dia seguinte."""
     if current_card:
-        col = get_collection()
-        col.sched.bury_cards([current_card.id])
+        get_collection().sched.bury_cards([current_card.id])
     send_next_card()
 
 
