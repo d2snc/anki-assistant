@@ -12,12 +12,14 @@ from eventlet import tpool
 
 import os
 import re
+import json
 import time
 import asyncio
 import subprocess
 import logging
 import base64
 import unicodedata
+from datetime import datetime
 
 import numpy as np
 from flask import Flask, render_template, send_from_directory
@@ -55,6 +57,16 @@ media_dir = None
 current_card = None
 current_card_english = False  # True quando o card atual está em inglês
 current_question = None  # texto renderizado da pergunta do card atual (para avaliação)
+session_stats = None  # métricas da sessão de estudo em andamento (None = sem sessão)
+
+# Histórico de sessões: uma lista JSON em disco, append-only. Fica fora do git
+# (uso pessoal) e mora ao lado deste arquivo para não depender do CWD.
+SESSIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session_history.json")
+
+# Tag aplicada às notas marcadas como "cartão ruim". A galeria é derivada ao vivo
+# desta tag (sem arquivo paralelo): suspende-se o card para não reaparecer no
+# estudo até o usuário editá-lo no Anki e removê-lo da galeria (untag + unsuspend).
+BAD_CARD_TAG = "cartao-ruim"
 
 
 def get_collection():
@@ -63,6 +75,98 @@ def get_collection():
         collection = Collection(ANKI_PATH)
         media_dir = collection.media.dir()
     return collection
+
+
+# ---------------------------------------------------------------------------
+# Histórico e estatísticas por sessão de estudo
+# ---------------------------------------------------------------------------
+
+def start_session_stats(deck_name):
+    """Inicia o acumulador de métricas de uma nova sessão."""
+    global session_stats
+    session_stats = {
+        "deck": deck_name,
+        "started_at": time.time(),
+        "answered": 0,   # cards efetivamente respondidos (acerto + erro)
+        "correct": 0,
+        "wrong": 0,
+        "skipped": 0,    # cards pulados pelo usuário (botão/voz), não os auto-enterrados
+        "scores": [],    # notas 1–4 de cada card respondido
+    }
+
+
+def record_answer(passed, score):
+    """Contabiliza um card respondido na sessão atual."""
+    if session_stats is None:
+        return
+    session_stats["answered"] += 1
+    session_stats["scores"].append(score)
+    if passed:
+        session_stats["correct"] += 1
+    else:
+        session_stats["wrong"] += 1
+
+
+def record_skip():
+    """Contabiliza um card pulado pelo usuário na sessão atual."""
+    if session_stats is not None:
+        session_stats["skipped"] += 1
+
+
+def load_history():
+    """Lê o histórico de sessões do disco. Lista vazia se ainda não existe."""
+    try:
+        with open(SESSIONS_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def finalize_session():
+    """Fecha a sessão atual, grava no histórico e devolve o resumo (ou None).
+
+    Sessões sem nenhuma atividade (nada respondido nem pulado) não são gravadas.
+    Idempotente: zera session_stats, então chamadas repetidas (ex.: session_end
+    seguido de disconnect) não duplicam o registro.
+    """
+    global session_stats
+    if session_stats is None:
+        return None
+
+    stats = session_stats
+    session_stats = None
+
+    if stats["answered"] == 0 and stats["skipped"] == 0:
+        return None
+
+    ended = time.time()
+    answered = stats["answered"]
+    accuracy = round(100 * stats["correct"] / answered, 1) if answered else 0.0
+    avg_score = round(sum(stats["scores"]) / answered, 2) if answered else 0.0
+
+    record = {
+        "deck": stats["deck"],
+        "started_at": datetime.fromtimestamp(stats["started_at"]).isoformat(timespec="seconds"),
+        "ended_at": datetime.fromtimestamp(ended).isoformat(timespec="seconds"),
+        "duration_sec": round(ended - stats["started_at"], 1),
+        "answered": answered,
+        "correct": stats["correct"],
+        "wrong": stats["wrong"],
+        "skipped": stats["skipped"],
+        "accuracy": accuracy,
+        "avg_score": avg_score,
+    }
+
+    history = load_history()
+    history.append(record)
+    try:
+        with open(SESSIONS_PATH, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        log.error(f"Erro ao gravar histórico de sessão: {e}")
+
+    log.info(f"Sessão registrada: {record}")
+    return record
 
 
 def convert_audio_to_wav(audio_bytes):
@@ -111,29 +215,61 @@ def is_basic_note(card):
     return "basic" in name
 
 
+# Filas do Anki (campo queue do card): 0=new, 1=learning intradiário, 2=review
+# (Due), 3=day-learn. Só a 1 (learning intradiário) trava no topo da fila.
+QUEUE_LEARN_INTRADAY = 1
+# Quantos cards à frente vasculhar para pular a "frente" de learning e achar o Due.
+# Generoso de propósito: cobre o caso de muitos learning empilhados antes do Due.
+CARD_LOOKAHEAD = 500
+
+
+def _pick_next_card(col):
+    """Escolhe o próximo card priorizando Due/New sobre o learning intradiário.
+
+    A regra do backend v3 (descoberta empiricamente): você só pode responder o
+    PRIMEIRO card da fila que NÃO é learning intradiário (queue 1). Os learning da
+    frente podem ser "pulados" — então revisões e cards novos saem antes de a gente
+    gastar tempo no learning, que é o que fazia o Due nunca fechar. Mas NÃO dá para
+    reordenar entre os não-learning: responder um review/novo mais fundo (pulando um
+    da frente, ex.: um não-Basic) devolve 'not at top of queue'.
+
+    Por isso o predicado filtra só por queue != 1 (sem olhar Basic): devolvemos o
+    verdadeiro primeiro não-learning. Se ele for não-Basic ou não renderizar, quem
+    enterra é advance_card — nunca pulamos para um mais fundo. Sem nenhum
+    não-learning, caímos no topo real (learning), que é sempre respondível.
+    """
+    card = get_prioritized_card(
+        col, fetch_limit=CARD_LOOKAHEAD,
+        predicate=lambda c: getattr(c, "queue", None) != QUEUE_LEARN_INTRADAY,
+    )
+    if card is not None:
+        return card
+
+    # Só sobrou learning intradiário: responde o topo real da fila.
+    return get_prioritized_card(col)
+
+
 def advance_card():
     """Avança para o próximo card estudável. Retorna (card, question, answer_text) ou None.
 
-    O Anki só permite responder o card que está no TOPO da fila (answer_card no
-    backend v3 rejeita qualquer outro com 'not at top of queue'). Por isso pegamos
-    sempre o card do topo, em vez de "espiar" um Basic mais à frente — o que fazia
-    o answerCard falhar em loop quando um Cloze/non-Basic ficava parado no topo.
-
-    Cards fora do escopo da sessão de voz (não-Basic) ou que não renderizam são
-    enterrados (bury) para a fila avançar: bury não altera intervalo/ease e o Anki
-    desenterra sozinho no dia seguinte. Resposta ERRADA nunca passa por aqui — ela
-    vai pra learn via Again no fluxo natural.
+    A escolha (prioridade Due → New → Learn) fica em _pick_next_card. Aqui só
+    tratamos o que ele devolve: cards fora do escopo da sessão de voz (não-Basic)
+    ou que não renderizam são enterrados (bury) para a fila avançar — bury não
+    altera intervalo/ease e o Anki desenterra sozinho no dia seguinte. Resposta
+    ERRADA nunca passa por aqui — ela vai pra learn via Again no fluxo natural.
     """
     global current_card
     col = get_collection()
 
     while True:
-        card = get_prioritized_card(col)  # sempre o topo real da fila
+        card = _pick_next_card(col)
         if card is None:
             current_card = None
             return None
 
-        # Card fora de escopo no topo bloqueia todos atrás dele: enterra e avança.
+        # _pick_next_card devolve o 1º não-learning (Basic ou não). Se for não-Basic,
+        # enterra para destravar — nunca pulamos para um Basic mais fundo (daria
+        # 'not at top of queue'). É o único ponto que altera a fila aqui.
         if not is_basic_note(card):
             col.sched.bury_cards([card.id])
             continue
@@ -214,6 +350,65 @@ def sync_api():
         return {"success": False, "message": str(e)}, 500
 
 
+@app.route("/history")
+def get_history_api():
+    """Histórico de sessões, mais recentes primeiro, com totais agregados."""
+    sessions = load_history()
+    totals = {
+        "sessions": len(sessions),
+        "answered": sum(s.get("answered", 0) for s in sessions),
+        "correct": sum(s.get("correct", 0) for s in sessions),
+        "duration_sec": round(sum(s.get("duration_sec", 0) for s in sessions), 1),
+    }
+    answered = totals["answered"]
+    totals["accuracy"] = round(100 * totals["correct"] / answered, 1) if answered else 0.0
+    return {"sessions": list(reversed(sessions)), "totals": totals}
+
+
+@app.route("/bad_cards")
+def get_bad_cards_api():
+    """Galeria de cartões ruins: notas com a tag BAD_CARD_TAG, renderizadas ao
+    vivo (pergunta/resposta/deck) para o usuário localizar e editar no Anki."""
+    col = get_collection()
+    cards = []
+    for nid in col.find_notes(f"tag:{BAD_CARD_TAG}"):
+        note = col.get_note(nid)
+        note_cards = note.cards()
+        if not note_cards:
+            continue
+        card = note_cards[0]
+        try:
+            question = html2text(strip_images_from_text(card.question())).strip()
+            answer = html2text(strip_images_from_text(card.answer())).strip()
+        except Exception as e:
+            log.error(f"Erro ao renderizar card ruim {card.id}: {e}")
+            question, answer = "", ""
+        deck_id = getattr(card, "odid", 0) or card.did
+        cards.append({
+            "note_id": nid,
+            "deck": col.decks.name(deck_id),
+            "question": question,
+            "answer": answer,
+        })
+    return {"cards": cards}
+
+
+@app.route("/bad_cards/<int:note_id>", methods=["DELETE"])
+def remove_bad_card_api(note_id):
+    """Remove uma nota da galeria: tira a tag e reativa (unsuspend) os cards,
+    devolvendo-os ao estudo. Chamado depois que o usuário editou no Anki."""
+    col = get_collection()
+    try:
+        note = col.get_note(note_id)
+    except Exception:
+        return {"success": False, "message": "Nota não encontrada"}, 404
+    card_ids = [c.id for c in note.cards()]
+    col.tags.bulk_remove([note_id], BAD_CARD_TAG)
+    if card_ids:
+        col.sched.unsuspend_cards(card_ids)
+    return {"success": True}
+
+
 @socketio.on("connect")
 def handle_connect():
     log.info("Cliente conectado")
@@ -223,10 +418,14 @@ def handle_connect():
 @socketio.on("start_session")
 def handle_start_session(data):
     """Inicia sessão de estudo focada no deck selecionado."""
+    finalize_session()  # grava sessão anterior não finalizada, se houver
     deck_id = data.get("deck_id")
+    col = get_collection()
+    deck_name = "Todos os decks"
     if deck_id:
-        col = get_collection()
         col.decks.set_current(deck_id)
+        deck_name = col.decks.name(deck_id)
+    start_session_stats(deck_name)
     send_next_card()
 
 
@@ -270,7 +469,11 @@ def send_next_card():
     global current_card_english, current_question
     result = advance_card()
     if result is None:
-        emit("session_end", {"message": "Parabéns! Você terminou todos os cards de hoje!"})
+        summary = finalize_session()
+        payload = {"message": "Parabéns! Você terminou todos os cards de hoje!"}
+        if summary:
+            payload["summary"] = summary
+        emit("session_end", payload)
         return
 
     card, question, answer_text = result
@@ -340,6 +543,7 @@ def handle_audio_answer(data):
     # Verifica comandos de voz
     if "skip card" in user_response.lower():
         get_collection().sched.bury_cards([card.id])
+        record_skip()
         send_next_card()
         return
 
@@ -374,6 +578,7 @@ def handle_audio_answer(data):
     # (race de áudio ou rede) não tente respondê-lo de novo. O próximo card é
     # definido por send_next_card (disparado pelo cliente após o feedback_tts).
     current_card = None
+    record_answer(passed, score)
 
     # Envia resultado
     color = "#02CC0255" if passed else "#CC020255"
@@ -419,6 +624,24 @@ def handle_skip_card():
     fila sem mudar intervalo/ease, e o Anki o desenterra no dia seguinte."""
     if current_card:
         get_collection().sched.bury_cards([current_card.id])
+        record_skip()
+    send_next_card()
+
+
+@socketio.on("flag_bad_card")
+def handle_flag_bad_card():
+    """Marca o card atual como 'cartão ruim': aplica a tag na nota e suspende
+    todos os cards dela, de modo que não reapareça no estudo. A nota passa a
+    aparecer na galeria, onde o usuário a edita no Anki e depois a remove
+    (untag + unsuspend). Em seguida avança para o próximo card."""
+    global current_card
+    if current_card:
+        col = get_collection()
+        note = current_card.note()
+        card_ids = [c.id for c in note.cards()]
+        col.tags.bulk_add([note.id], BAD_CARD_TAG)
+        col.sched.suspend_cards(card_ids)
+        current_card = None
     send_next_card()
 
 
@@ -431,6 +654,8 @@ def handle_next_card():
 @socketio.on("disconnect")
 def handle_disconnect():
     log.info("Cliente desconectado")
+    # Salva a sessão mesmo se o usuário fechou a aba sem terminar os cards.
+    finalize_session()
 
 
 if __name__ == "__main__":

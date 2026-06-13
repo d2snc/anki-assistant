@@ -445,6 +445,223 @@
             40% { transform: translateY(-6px); opacity: 1; }
         }
 
+        /* Cronômetro da sessão */
+        #session-timer {
+            margin-top: 6px;
+            text-align: center;
+            font-size: 0.95rem;
+            font-weight: 700;
+            font-family: monospace;
+            color: var(--text-secondary);
+            letter-spacing: 0.05em;
+        }
+
+        /* Resumo da sessão (tela final) */
+        #session-summary {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            max-width: 360px;
+            margin: 24px auto 0;
+        }
+        .summary-item {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 14px;
+            text-align: center;
+        }
+        .summary-item .summary-val {
+            font-size: 1.5rem;
+            font-weight: 700;
+            font-family: monospace;
+            color: var(--text-primary);
+        }
+        .summary-item .summary-label {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-top: 4px;
+        }
+        .summary-detail {
+            grid-column: 1 / -1;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-top: 2px;
+            letter-spacing: 0.04em;
+        }
+
+        /* Botões do topo da tela inicial (sync + histórico) */
+        .top-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 22px;
+        }
+        .top-actions .btn-sync {
+            margin: 0;
+        }
+
+        /* Modal de histórico */
+        #history-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 200;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+        .history-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            width: 100%;
+            max-width: 560px;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+        }
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+        .history-header h2 {
+            font-size: 1.05rem;
+            font-weight: 700;
+        }
+        .history-close {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.3rem;
+            cursor: pointer;
+            padding: 0 6px;
+            line-height: 1;
+        }
+        #history-totals {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            text-align: center;
+            flex-shrink: 0;
+        }
+        #history-list {
+            overflow-y: auto;
+            padding: 8px 14px 16px;
+        }
+        .history-item {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 12px 14px;
+            margin: 8px 0;
+        }
+        .history-item .hist-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 10px;
+        }
+        .history-item .hist-deck {
+            font-weight: 600;
+            font-size: 0.92rem;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .history-item .hist-acc {
+            font-weight: 700;
+            font-family: monospace;
+            font-size: 0.95rem;
+            flex-shrink: 0;
+        }
+        .hist-acc.good { color: var(--success); }
+        .hist-acc.mid { color: #eab308; }
+        .hist-acc.bad { color: var(--error); }
+        .history-item .hist-meta {
+            margin-top: 7px;
+            font-size: 0.76rem;
+            color: var(--text-muted);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 12px;
+        }
+        .history-empty {
+            text-align: center;
+            color: var(--text-muted);
+            padding: 30px 20px;
+        }
+
+        /* Galeria de cartões ruins (reusa #history-totals / #gallery-totals via id) */
+        #gallery-totals {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            text-align: center;
+            flex-shrink: 0;
+        }
+        #gallery-list {
+            overflow-y: auto;
+            padding: 8px 14px 16px;
+        }
+        .gallery-item {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 12px 14px;
+            margin: 8px 0;
+        }
+        .gallery-item .gal-deck {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .gallery-item .gal-q {
+            font-weight: 600;
+            font-size: 0.92rem;
+            color: var(--text-primary);
+            white-space: pre-wrap;
+        }
+        .gallery-item .gal-a {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 6px;
+            padding-top: 6px;
+            border-top: 1px solid var(--border);
+            white-space: pre-wrap;
+        }
+        .gallery-item .gal-remove {
+            margin-top: 10px;
+            width: 100%;
+            padding: 8px 12px;
+            font-size: 0.82rem;
+            background: transparent;
+            border: 1px solid var(--success);
+            color: var(--success);
+            border-radius: var(--radius-sm);
+        }
+        .gallery-item .gal-remove:hover:not(:disabled) {
+            background: var(--success);
+            color: var(--bg-primary);
+        }
+
         /* Hide elements by state */
         .hidden { display: none !important; }
     </style>
@@ -460,12 +677,17 @@
             <div class="stat" id="stat-box-review"><span class="stat-label">Due</span><span id="stat-review" class="stat-val count-review">0</span></div>
         </div>
         <div id="current-deck" class="hidden"></div>
+        <div id="session-timer" class="hidden">⏱ <span id="timer-display">00:00</span></div>
     </header>
 
     <div id="card-area">
         <!-- Start screen -->
         <div id="start-screen">
-            <button id="btn-sync" class="btn btn-sync" onclick="syncAnki()">☁️ Sincronizar com AnkiWeb</button>
+            <div class="top-actions">
+                <button id="btn-sync" class="btn btn-sync" onclick="syncAnki()">☁️ Sincronizar</button>
+                <button class="btn btn-sync" onclick="openHistory()">📊 Histórico</button>
+                <button class="btn btn-sync" onclick="openGallery()">🚩 Cartões ruins</button>
+            </div>
             <div class="emoji">🎙️</div>
             <h2>Anki Voice</h2>
             <p id="start-subtitle">Carregando seus decks...</p>
@@ -482,6 +704,31 @@
         <div id="session-end">
             <div class="emoji">🎉</div>
             <p id="session-end-msg"></p>
+            <div id="session-summary"></div>
+        </div>
+    </div>
+
+    <!-- Modal de histórico de sessões -->
+    <div id="history-modal" class="hidden" onclick="if (event.target === this) closeHistory()">
+        <div class="history-content">
+            <div class="history-header">
+                <h2>📊 Histórico de sessões</h2>
+                <button class="history-close" onclick="closeHistory()">✕</button>
+            </div>
+            <div id="history-totals"></div>
+            <div id="history-list"></div>
+        </div>
+    </div>
+
+    <!-- Modal da galeria de cartões ruins -->
+    <div id="gallery-modal" class="hidden" onclick="if (event.target === this) closeGallery()">
+        <div class="history-content">
+            <div class="history-header">
+                <h2>🚩 Cartões ruins</h2>
+                <button class="history-close" onclick="closeGallery()">✕</button>
+            </div>
+            <div id="gallery-totals"></div>
+            <div id="gallery-list"></div>
         </div>
     </div>
 
@@ -496,6 +743,9 @@
         </button>
         <button id="btn-record" class="btn hidden" onclick="toggleRecording()" disabled>
             🎤
+        </button>
+        <button id="btn-bad" class="btn btn-secondary hidden" onclick="flagBadCard()">
+            🚩 Ruim
         </button>
         <button id="btn-next" class="btn hidden" onclick="nextCard()">
             Próximo →
@@ -529,12 +779,54 @@
         const transcriptionText = document.getElementById('transcription-text');
         const btnRecord = document.getElementById('btn-record');
         const btnSkip = document.getElementById('btn-skip');
+        const btnBad = document.getElementById('btn-bad');
         const btnNext = document.getElementById('btn-next');
         const sessionEnd = document.getElementById('session-end');
         const sessionEndMsg = document.getElementById('session-end-msg');
         const flashOverlay = document.getElementById('flash-overlay');
         const statsBar = document.getElementById('stats-bar');
         const currentDeck = document.getElementById('current-deck');
+        const sessionTimer = document.getElementById('session-timer');
+        const timerDisplay = document.getElementById('timer-display');
+        const sessionSummary = document.getElementById('session-summary');
+        const historyModal = document.getElementById('history-modal');
+        const historyList = document.getElementById('history-list');
+        const historyTotals = document.getElementById('history-totals');
+        const galleryModal = document.getElementById('gallery-modal');
+        const galleryList = document.getElementById('gallery-list');
+        const galleryTotals = document.getElementById('gallery-totals');
+
+        // ---- Session timer (cronômetro) ----
+        let sessionStartMs = null;
+        let timerInterval = null;
+
+        function formatDuration(totalSec) {
+            totalSec = Math.max(0, Math.floor(totalSec));
+            const h = Math.floor(totalSec / 3600);
+            const m = Math.floor((totalSec % 3600) / 60);
+            const s = totalSec % 60;
+            const pad = (n) => String(n).padStart(2, '0');
+            return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+        }
+
+        function updateTimer() {
+            if (sessionStartMs === null) return;
+            timerDisplay.textContent = formatDuration((Date.now() - sessionStartMs) / 1000);
+        }
+
+        function startSessionTimer() {
+            sessionStartMs = Date.now();
+            updateTimer();
+            if (timerInterval) clearInterval(timerInterval);
+            timerInterval = setInterval(updateTimer, 1000);
+        }
+
+        function stopSessionTimer() {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+        }
 
         // ---- Audio playback ----
         function playAudioBase64(b64, callback) {
@@ -574,9 +866,11 @@
             sessionEnd.classList.toggle('hidden', state !== 'end');
             statsBar.classList.toggle('hidden', state !== 'card' && state !== 'result');
             currentDeck.classList.toggle('hidden', state !== 'card' && state !== 'result');
+            sessionTimer.classList.toggle('hidden', state !== 'card' && state !== 'result');
 
             btnRecord.classList.toggle('hidden', state !== 'card');
             btnSkip.classList.toggle('hidden', state !== 'card');
+            btnBad.classList.toggle('hidden', state !== 'card');
             btnNext.classList.toggle('hidden', state !== 'result');
 
             if (state === 'card') {
@@ -642,7 +936,7 @@
             }
             setTimeout(() => {
                 btn.disabled = false;
-                btn.textContent = '☁️ Sincronizar com AnkiWeb';
+                btn.textContent = '☁️ Sincronizar';
             }, 4000);
         }
 
@@ -678,6 +972,7 @@
             }
 
             showState('card');
+            startSessionTimer();
             setStatus('Conectando ao servidor...');
 
             socket = io({ transports: ['websocket'] });
@@ -719,6 +1014,8 @@
                 }
                 showState('card');
                 btnRecord.disabled = true;
+                btnSkip.disabled = false;
+                btnBad.disabled = false;
                 setStatus('Ouvindo pergunta <span class="listening-dots"><span></span><span></span><span></span></span>');
             });
 
@@ -771,7 +1068,9 @@
             });
 
             socket.on('session_end', (data) => {
+                stopSessionTimer();
                 sessionEndMsg.textContent = data.message;
+                renderSessionSummary(data.summary);
                 showState('end');
                 setStatus('');
             });
@@ -781,6 +1080,7 @@
             });
 
             socket.on('disconnect', () => {
+                stopSessionTimer();
                 setStatus('Desconectado do servidor');
             });
         }
@@ -839,6 +1139,7 @@
                 btnRecord.textContent = '⏹';
                 btnRecord.disabled = false;
                 btnSkip.disabled = true;
+                btnBad.disabled = true;
                 setStatus('Gravando... fale sua resposta');
 
                 // Inicia timer de gravação de 8 segundos
@@ -909,6 +1210,163 @@
         function nextCard() {
             socket.emit('next_card');
             setStatus('Carregando próximo card...');
+        }
+
+        function flagBadCard() {
+            btnBad.disabled = true;
+            btnSkip.disabled = true;
+            socket.emit('flag_bad_card');
+            setStatus('🚩 Marcado como ruim. Vai pra galeria.');
+        }
+
+        // ---- Session summary (tela final) ----
+        function renderSessionSummary(summary) {
+            if (!summary) {
+                sessionSummary.innerHTML = '';
+                return;
+            }
+            const items = [
+                { val: formatDuration(summary.duration_sec), label: 'Tempo' },
+                { val: summary.answered, label: 'Cards' },
+                { val: summary.accuracy + '%', label: 'Acerto' },
+                { val: summary.avg_score, label: 'Nota média' },
+            ];
+            let html = items.map((i) =>
+                `<div class="summary-item"><div class="summary-val">${i.val}</div><div class="summary-label">${i.label}</div></div>`
+            ).join('');
+            const skipped = summary.skipped ? `  ·  ⏭ ${summary.skipped}` : '';
+            html += `<div class="summary-detail">✅ ${summary.correct}  ·  ❌ ${summary.wrong}${skipped}</div>`;
+            sessionSummary.innerHTML = html;
+        }
+
+        // ---- History (histórico de sessões) ----
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str == null ? '' : String(str);
+            return div.innerHTML;
+        }
+
+        function accClass(acc) {
+            if (acc >= 80) return 'good';
+            if (acc >= 50) return 'mid';
+            return 'bad';
+        }
+
+        function formatDateTime(iso) {
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return iso;
+            return d.toLocaleString('pt-BR', {
+                day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+            });
+        }
+
+        async function openHistory() {
+            historyModal.classList.remove('hidden');
+            historyTotals.textContent = '';
+            historyList.innerHTML = '<p class="history-empty">Carregando...</p>';
+            try {
+                const res = await fetch('/history');
+                const data = await res.json();
+                renderHistory(data);
+            } catch (e) {
+                console.error(e);
+                historyList.innerHTML = '<p class="history-empty">Erro ao carregar histórico</p>';
+            }
+        }
+
+        function closeHistory() {
+            historyModal.classList.add('hidden');
+        }
+
+        function renderHistory(data) {
+            const sessions = data.sessions || [];
+            const t = data.totals || {};
+            if (sessions.length === 0) {
+                historyTotals.textContent = '';
+                historyList.innerHTML = '<p class="history-empty">Nenhuma sessão registrada ainda.</p>';
+                return;
+            }
+            historyTotals.innerHTML =
+                `${t.sessions} sessões · ${t.answered} cards · ${t.accuracy}% de acerto · ${formatDuration(t.duration_sec)} no total`;
+            historyList.innerHTML = sessions.map((s) => {
+                const deck = escapeHtml(s.deck).replace(/::/g, ' › ');
+                const skipped = s.skipped ? ` ⏭ ${s.skipped}` : '';
+                return `
+                    <div class="history-item">
+                        <div class="hist-top">
+                            <span class="hist-deck">${deck}</span>
+                            <span class="hist-acc ${accClass(s.accuracy)}">${s.accuracy}%</span>
+                        </div>
+                        <div class="hist-meta">
+                            <span>📅 ${formatDateTime(s.started_at)}</span>
+                            <span>⏱ ${formatDuration(s.duration_sec)}</span>
+                            <span>📦 ${s.answered} cards</span>
+                            <span>✅ ${s.correct} ❌ ${s.wrong}${skipped}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // ---- Galeria de cartões ruins ----
+        async function openGallery() {
+            galleryModal.classList.remove('hidden');
+            galleryTotals.textContent = '';
+            galleryList.innerHTML = '<p class="history-empty">Carregando...</p>';
+            try {
+                const res = await fetch('/bad_cards');
+                const data = await res.json();
+                renderGallery(data.cards || []);
+            } catch (e) {
+                console.error(e);
+                galleryList.innerHTML = '<p class="history-empty">Erro ao carregar galeria</p>';
+            }
+        }
+
+        function closeGallery() {
+            galleryModal.classList.add('hidden');
+        }
+
+        function renderGallery(cards) {
+            if (cards.length === 0) {
+                galleryTotals.textContent = '';
+                galleryList.innerHTML = '<p class="history-empty">Nenhum cartão marcado como ruim.</p>';
+                return;
+            }
+            galleryTotals.textContent =
+                `${cards.length} ${cards.length === 1 ? 'cartão marcado' : 'cartões marcados'} · edite no Anki e remova daqui`;
+            galleryList.innerHTML = cards.map((c) => {
+                const deck = escapeHtml(c.deck).replace(/::/g, ' › ');
+                const q = escapeHtml(c.question) || '<em>(sem pergunta)</em>';
+                const a = escapeHtml(c.answer) || '<em>(sem resposta)</em>';
+                return `
+                    <div class="gallery-item">
+                        <div class="gal-deck">📚 ${deck}</div>
+                        <div class="gal-q">${q}</div>
+                        <div class="gal-a">${a}</div>
+                        <button class="gal-remove" onclick="removeBadCard(${c.note_id}, this)">✓ Editei — remover da galeria</button>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function removeBadCard(noteId, btn) {
+            btn.disabled = true;
+            btn.textContent = 'Removendo...';
+            try {
+                const res = await fetch('/bad_cards/' + noteId, { method: 'DELETE' });
+                const data = await res.json();
+                if (data.success) {
+                    openGallery();  // recarrega a lista
+                } else {
+                    btn.disabled = false;
+                    btn.textContent = '⚠️ Erro ao remover';
+                }
+            } catch (e) {
+                console.error(e);
+                btn.disabled = false;
+                btn.textContent = '⚠️ Erro de conexão';
+            }
         }
     </script>
 </body>
