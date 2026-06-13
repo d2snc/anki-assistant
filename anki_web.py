@@ -14,6 +14,7 @@ import os
 import re
 import json
 import time
+import hashlib
 import asyncio
 import subprocess
 import logging
@@ -39,6 +40,7 @@ from anki_ai import (
     strip_punctuation_for_tts,
     strip_images_from_text,
     get_prioritized_card,
+    review_flashcard,
     tts_to_bytes,
     SAMPLE_RATE,
 )
@@ -67,6 +69,16 @@ SESSIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessio
 # desta tag (sem arquivo paralelo): suspende-se o card para não reaparecer no
 # estudo até o usuário editá-lo no Anki e removê-lo da galeria (untag + unsuspend).
 BAD_CARD_TAG = "cartao-ruim"
+
+# Revisor de flashcards em background: percorre as notas Basic (só texto) e
+# guarda sugestões de melhoria/divisão num cache em disco (fora do git).
+REVIEW_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "review_suggestions.json")
+REVIEW_DELAY_SEC = 3        # pausa entre chamadas de LLM (respeita rate limit do free tier)
+REVIEW_RESCAN_SEC = 600     # após varrer tudo, espera antes de reprocurar notas novas/editadas
+
+review_state = None         # {"analyzed": {nid: hash}, "suggestions": {nid: {...}}}
+review_worker_started = False
+review_progress = {"analyzed": 0, "total": 0, "running": False}
 
 
 def get_collection():
@@ -428,10 +440,262 @@ def remove_bad_card_api(note_id):
     return {"success": True}
 
 
+# ---------------------------------------------------------------------------
+# Revisor de flashcards em background
+# ---------------------------------------------------------------------------
+
+def load_review_state():
+    """Carrega (uma vez) o cache de sugestões do disco para a memória."""
+    global review_state
+    if review_state is not None:
+        return review_state
+    try:
+        with open(REVIEW_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    review_state = {
+        "analyzed": data.get("analyzed", {}),       # nid (str) -> hash do conteúdo já analisado
+        "suggestions": data.get("suggestions", {}),  # nid (str) -> sugestão pendente
+    }
+    return review_state
+
+
+def save_review_state():
+    """Persiste o cache de sugestões no disco."""
+    if review_state is None:
+        return
+    try:
+        with open(REVIEW_PATH, "w", encoding="utf-8") as f:
+            json.dump(review_state, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        log.error(f"Erro ao gravar sugestões de revisão: {e}")
+
+
+def _is_basic_notetype(note):
+    """True se a NOTA é de um note type Basic/Básico. Mesma normalização de
+    acentos/variantes de is_basic_note, mas a partir da nota (não do card)."""
+    name = note.note_type()["name"]
+    name = unicodedata.normalize("NFKD", name)
+    name = "".join(c for c in name if not unicodedata.combining(c)).lower()
+    return "basic" in name
+
+
+def _has_media(html):
+    """True se o campo contém imagem ou som — esses cartões são pulados pelo
+    revisor para não destruir mídia ao reescrever os campos em texto."""
+    return bool(re.search(r'<img|\[sound:|\[anki:play:', html, re.IGNORECASE))
+
+
+def _note_text(html):
+    """Converte o HTML de um campo para texto limpo (sem imagens)."""
+    return html2text(strip_images_from_text(html)).strip()
+
+
+def _content_hash(front_html, back_html):
+    """Hash do conteúdo da nota: muda quando a frente/verso são editados, o que
+    faz o revisor reanalisar a nota num passe futuro."""
+    return hashlib.sha1((front_html + "\x00" + back_html).encode("utf-8")).hexdigest()
+
+
+def _note_deck_name(col, note):
+    """Nome do deck do primeiro card da nota (usa o deck original se filtrado)."""
+    cards = note.cards()
+    if not cards:
+        return ""
+    deck_id = getattr(cards[0], "odid", 0) or cards[0].did
+    return col.decks.name(deck_id)
+
+
+def _to_field_html(text):
+    """Texto plano vindo do LLM → HTML simples de campo do Anki (\\n vira <br>)."""
+    return text.replace("\n", "<br>")
+
+
+def _collect_review_candidates(col):
+    """Notas elegíveis para revisão: Basic, só texto, com frente e verso.
+    Devolve lista de (nid, note, front_text, back_text, content_hash)."""
+    candidates = []
+    for nid in col.find_notes("deck:*"):
+        try:
+            note = col.get_note(nid)
+        except Exception:
+            continue
+        if not _is_basic_notetype(note) or len(note.fields) < 2:
+            continue
+        front_html, back_html = note.fields[0], note.fields[1]
+        if _has_media(front_html) or _has_media(back_html):
+            continue
+        front, back = _note_text(front_html), _note_text(back_html)
+        if not front and not back:
+            continue
+        candidates.append((nid, note, front, back, _content_hash(front_html, back_html)))
+    return candidates
+
+
+def review_worker():
+    """Worker cooperativo (eventlet): varre as notas Basic, pede ao LLM uma
+    avaliação de cada uma ainda não analisada e guarda as sugestões. Entre as
+    chamadas de LLM cede o controle (eventlet.sleep) para não travar a sessão de
+    estudo. Após varrer tudo, dorme e reprocura notas novas/editadas."""
+    log.info("Worker de revisão de flashcards iniciado.")
+    state = load_review_state()
+    while True:
+        try:
+            col = get_collection()
+            candidates = _collect_review_candidates(col)
+        except Exception as e:
+            log.error(f"Revisor: erro ao listar notas: {e}")
+            eventlet.sleep(60)
+            continue
+
+        review_progress["total"] = len(candidates)
+        review_progress["analyzed"] = sum(
+            1 for (nid, _, _, _, h) in candidates if state["analyzed"].get(str(nid)) == h
+        )
+        review_progress["running"] = True
+
+        for (nid, note, front, back, content_hash) in candidates:
+            key = str(nid)
+            if state["analyzed"].get(key) == content_hash:
+                continue  # já analisado e inalterado
+
+            try:
+                result = review_flashcard(front, back)
+                if result is None:
+                    # LLM indisponível agora; não marca como analisado para tentar
+                    # de novo num próximo passe. Espera para não martelar o rate limit.
+                    eventlet.sleep(REVIEW_DELAY_SEC)
+                    continue
+
+                state["analyzed"][key] = content_hash
+                if result["verdict"] in ("edit", "split") and result["cards"]:
+                    state["suggestions"][key] = {
+                        "note_id": nid,
+                        "deck": _note_deck_name(col, note),
+                        "verdict": result["verdict"],
+                        "reason": result["reason"],
+                        "current": {"front": front, "back": back},
+                        "cards": result["cards"],
+                        "status": "pending",
+                        "analyzed_at": datetime.now().isoformat(timespec="seconds"),
+                    }
+                else:
+                    # Virou "ok" (ou mudou e agora está bom): limpa sugestão antiga.
+                    state["suggestions"].pop(key, None)
+
+                review_progress["analyzed"] += 1
+                save_review_state()
+            except Exception as e:
+                log.error(f"Revisor: erro ao analisar nota {nid}: {e}")
+            eventlet.sleep(REVIEW_DELAY_SEC)
+
+        review_progress["running"] = False
+        eventlet.sleep(REVIEW_RESCAN_SEC)
+
+
+def start_review_worker():
+    """Inicia o worker de revisão uma única vez."""
+    global review_worker_started
+    if review_worker_started:
+        return
+    review_worker_started = True
+    socketio.start_background_task(review_worker)
+
+
+@app.route("/review_suggestions")
+def get_review_suggestions_api():
+    """Sugestões de revisão pendentes + progresso do worker em background."""
+    state = load_review_state()
+    suggestions = [s for s in state["suggestions"].values() if s.get("status") == "pending"]
+    suggestions.sort(key=lambda s: s.get("analyzed_at", ""), reverse=True)
+    return {"suggestions": suggestions, "progress": review_progress}
+
+
+def _apply_edit(col, note, card):
+    """Aplica uma sugestão de edição: reescreve frente/verso da própria nota."""
+    note.fields[0] = _to_field_html(card.get("front", ""))
+    note.fields[1] = _to_field_html(card.get("back", ""))
+    col.update_note(note)
+
+
+def _apply_split(col, note, cards):
+    """Aplica uma sugestão de divisão: cria os cartões menores (mesmo note type,
+    deck e tags) e remove a nota grande original."""
+    notetype = note.note_type()
+    orig_cards = note.cards()
+    if orig_cards:
+        deck_id = getattr(orig_cards[0], "odid", 0) or orig_cards[0].did
+    else:
+        deck_id = col.decks.get_current_id()
+    for card in cards:
+        new = col.new_note(notetype)
+        new.fields[0] = _to_field_html(card.get("front", ""))
+        new.fields[1] = _to_field_html(card.get("back", ""))
+        new.tags = list(note.tags)
+        col.add_note(new, deck_id)
+    col.remove_notes([note.id])
+
+
+@app.route("/review_suggestions/<int:note_id>/accept", methods=["POST"])
+def accept_review_suggestion_api(note_id):
+    """Aceita e aplica uma sugestão: edita a nota ou a divide em cartões menores."""
+    state = load_review_state()
+    key = str(note_id)
+    sugg = state["suggestions"].get(key)
+    if not sugg or sugg.get("status") != "pending":
+        return {"success": False, "message": "Sugestão não encontrada"}, 404
+
+    col = get_collection()
+    try:
+        note = col.get_note(note_id)
+    except Exception:
+        # Nota apagada no Anki desde a análise: limpa a sugestão órfã.
+        state["suggestions"].pop(key, None)
+        state["analyzed"].pop(key, None)
+        save_review_state()
+        return {"success": False, "message": "Nota não existe mais"}, 404
+
+    cards = sugg.get("cards", [])
+    if not cards:
+        return {"success": False, "message": "Sugestão sem conteúdo"}, 400
+
+    try:
+        if sugg["verdict"] == "edit":
+            _apply_edit(col, note, cards[0])
+        elif sugg["verdict"] == "split":
+            _apply_split(col, note, cards)
+        else:
+            return {"success": False, "message": "Tipo de sugestão inválido"}, 400
+    except Exception as e:
+        log.error(f"Erro ao aplicar sugestão na nota {note_id}: {e}")
+        return {"success": False, "message": str(e)}, 500
+
+    # Some com a sugestão e esquece o hash antigo: o conteúdo mudou, então o
+    # worker reanalisa a(s) nova(s) nota(s) num próximo passe.
+    state["suggestions"].pop(key, None)
+    state["analyzed"].pop(key, None)
+    save_review_state()
+    return {"success": True}
+
+
+@app.route("/review_suggestions/<int:note_id>/dismiss", methods=["POST"])
+def dismiss_review_suggestion_api(note_id):
+    """Dispensa uma sugestão sem alterar o cartão. Mantém o hash em 'analyzed',
+    então ela só reaparece se o conteúdo do cartão for editado no Anki."""
+    state = load_review_state()
+    key = str(note_id)
+    if key in state["suggestions"]:
+        state["suggestions"].pop(key, None)
+        save_review_state()
+    return {"success": True}
+
+
 @socketio.on("connect")
 def handle_connect():
     log.info("Cliente conectado")
     ensure_models_loaded()
+    start_review_worker()
 
 
 @socketio.on("start_session")
@@ -499,7 +763,7 @@ def send_next_card():
     card.timer_started = time.time()
     current_question = question
 
-    current_card_english = is_english(question)
+    current_card_english = is_english(question, answer_text)
     voice = TTS_VOICE_EN if current_card_english else None
 
     # HTML do card com URLs de imagens apontando para /media/

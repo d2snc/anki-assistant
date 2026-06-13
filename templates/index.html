@@ -662,6 +662,132 @@
             color: var(--bg-primary);
         }
 
+        /* Sugestões de revisão de flashcards */
+        #review-progress {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            text-align: center;
+            flex-shrink: 0;
+        }
+        #review-list {
+            overflow-y: auto;
+            padding: 8px 14px 16px;
+        }
+        .rev-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .rev-badge {
+            font-size: 0.68rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            padding: 3px 8px;
+            border-radius: 999px;
+            flex-shrink: 0;
+        }
+        .rev-badge.rev-edit {
+            background: rgba(99, 102, 241, 0.18);
+            color: var(--accent);
+            border: 1px solid var(--accent);
+        }
+        .rev-badge.rev-split {
+            background: rgba(234, 179, 8, 0.15);
+            color: #eab308;
+            border: 1px solid #eab308;
+        }
+        .rev-reason {
+            font-size: 0.84rem;
+            color: var(--text-secondary);
+            font-style: italic;
+            margin-bottom: 10px;
+        }
+        .rev-cols {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .rev-block {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 10px 12px;
+        }
+        .rev-block.is-current {
+            opacity: 0.75;
+        }
+        .rev-block.is-new {
+            border-color: var(--success);
+        }
+        .rev-lbl {
+            font-size: 0.62rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin-bottom: 5px;
+        }
+        .rev-q {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: var(--text-primary);
+            white-space: pre-wrap;
+        }
+        .rev-a {
+            font-size: 0.84rem;
+            color: var(--text-secondary);
+            margin-top: 5px;
+            padding-top: 5px;
+            border-top: 1px solid var(--border);
+            white-space: pre-wrap;
+        }
+        .rev-arrow {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 1rem;
+        }
+        .rev-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .rev-accept, .rev-dismiss {
+            flex: 1;
+            padding: 9px 12px;
+            font-size: 0.82rem;
+            font-family: inherit;
+            font-weight: 600;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .rev-accept {
+            background: transparent;
+            border: 1px solid var(--success);
+            color: var(--success);
+        }
+        .rev-accept:hover:not(:disabled) {
+            background: var(--success);
+            color: var(--bg-primary);
+        }
+        .rev-dismiss {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+        }
+        .rev-dismiss:hover:not(:disabled) {
+            background: var(--bg-card-hover);
+            color: var(--text-secondary);
+        }
+        .rev-accept:disabled, .rev-dismiss:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         /* Hide elements by state */
         .hidden { display: none !important; }
     </style>
@@ -687,6 +813,7 @@
                 <button id="btn-sync" class="btn btn-sync" onclick="syncAnki()">☁️ Sincronizar</button>
                 <button class="btn btn-sync" onclick="openHistory()">📊 Histórico</button>
                 <button class="btn btn-sync" onclick="openGallery()">🚩 Cartões ruins</button>
+                <button class="btn btn-sync" onclick="openReview()">💡 Sugestão de Revisão de FlashCards</button>
             </div>
             <div class="emoji">🎙️</div>
             <h2>Anki Voice</h2>
@@ -729,6 +856,18 @@
             </div>
             <div id="gallery-totals"></div>
             <div id="gallery-list"></div>
+        </div>
+    </div>
+
+    <!-- Modal de sugestões de revisão de flashcards -->
+    <div id="review-modal" class="hidden" onclick="if (event.target === this) closeReview()">
+        <div class="history-content">
+            <div class="history-header">
+                <h2>💡 Sugestão de Revisão de FlashCards</h2>
+                <button class="history-close" onclick="closeReview()">✕</button>
+            </div>
+            <div id="review-progress"></div>
+            <div id="review-list"></div>
         </div>
     </div>
 
@@ -795,6 +934,9 @@
         const galleryModal = document.getElementById('gallery-modal');
         const galleryList = document.getElementById('gallery-list');
         const galleryTotals = document.getElementById('gallery-totals');
+        const reviewModal = document.getElementById('review-modal');
+        const reviewList = document.getElementById('review-list');
+        const reviewProgress = document.getElementById('review-progress');
 
         // ---- Session timer (cronômetro) ----
         let sessionStartMs = null;
@@ -1365,6 +1507,136 @@
             } catch (e) {
                 console.error(e);
                 btn.disabled = false;
+                btn.textContent = '⚠️ Erro de conexão';
+            }
+        }
+
+        // ---- Sugestão de revisão de flashcards ----
+        let reviewRefreshInterval = null;
+
+        async function openReview() {
+            reviewModal.classList.remove('hidden');
+            reviewProgress.textContent = 'Carregando...';
+            reviewList.innerHTML = '<p class="history-empty">Carregando...</p>';
+            await loadReview();
+            // Atualiza enquanto o modal estiver aberto: o worker analisa em background.
+            if (reviewRefreshInterval) clearInterval(reviewRefreshInterval);
+            reviewRefreshInterval = setInterval(loadReview, 8000);
+        }
+
+        function closeReview() {
+            reviewModal.classList.add('hidden');
+            if (reviewRefreshInterval) {
+                clearInterval(reviewRefreshInterval);
+                reviewRefreshInterval = null;
+            }
+        }
+
+        async function loadReview() {
+            try {
+                const res = await fetch('/review_suggestions');
+                const data = await res.json();
+                renderReview(data);
+            } catch (e) {
+                console.error(e);
+                reviewList.innerHTML = '<p class="history-empty">Erro ao carregar sugestões</p>';
+            }
+        }
+
+        function renderReview(data) {
+            const suggestions = data.suggestions || [];
+            const p = data.progress || {};
+            const total = p.total || 0;
+            const analyzed = p.analyzed || 0;
+            const running = p.running;
+            const n = suggestions.length;
+            const sufixo = n === 1 ? 'sugestão' : 'sugestões';
+            reviewProgress.innerHTML =
+                `Analisados ${analyzed}/${total} cartões${running ? ' · analisando…' : ''} · ${n} ${sufixo}`;
+
+            if (n === 0) {
+                reviewList.innerHTML = analyzed < total
+                    ? '<p class="history-empty">Ainda analisando seus cartões em background… volte daqui a pouco.</p>'
+                    : '<p class="history-empty">Nenhuma sugestão — seus cartões estão bem feitos! 🎉</p>';
+                return;
+            }
+            reviewList.innerHTML = suggestions.map(renderSuggestion).join('');
+        }
+
+        function renderCardBlock(label, card, isNew) {
+            const q = escapeHtml(card.front) || '<em>(sem pergunta)</em>';
+            const a = escapeHtml(card.back) || '<em>(sem resposta)</em>';
+            return `
+                <div class="rev-block ${isNew ? 'is-new' : 'is-current'}">
+                    <div class="rev-lbl">${label}</div>
+                    <div class="rev-q">${q}</div>
+                    <div class="rev-a">${a}</div>
+                </div>`;
+        }
+
+        function renderSuggestion(s) {
+            const deck = escapeHtml(s.deck || '').replace(/::/g, ' › ');
+            const badge = s.verdict === 'split'
+                ? '<span class="rev-badge rev-split">✂️ Dividir</span>'
+                : '<span class="rev-badge rev-edit">✏️ Melhorar</span>';
+            const before = renderCardBlock('Atual', s.current || {}, false);
+            const cards = s.cards || [];
+            const after = cards.map((c, i) =>
+                renderCardBlock(cards.length > 1 ? ('Novo cartão ' + (i + 1)) : 'Sugerido', c, true)
+            ).join('');
+            const acceptLabel = s.verdict === 'split'
+                ? `✓ Dividir em ${cards.length} cartões`
+                : '✓ Aceitar e aplicar';
+            return `
+                <div class="gallery-item" id="rev-${s.note_id}">
+                    <div class="rev-head">${badge}<span class="gal-deck">📚 ${deck}</span></div>
+                    <div class="rev-reason">${escapeHtml(s.reason)}</div>
+                    <div class="rev-cols">
+                        ${before}
+                        <div class="rev-arrow">↓</div>
+                        ${after}
+                    </div>
+                    <div class="rev-actions">
+                        <button class="rev-accept" onclick="acceptReview(${s.note_id}, this)">${acceptLabel}</button>
+                        <button class="rev-dismiss" onclick="dismissReview(${s.note_id}, this)">Dispensar</button>
+                    </div>
+                </div>`;
+        }
+
+        function setReviewButtonsDisabled(noteId, disabled) {
+            const item = document.getElementById('rev-' + noteId);
+            if (!item) return;
+            item.querySelectorAll('button').forEach(b => b.disabled = disabled);
+        }
+
+        async function acceptReview(noteId, btn) {
+            setReviewButtonsDisabled(noteId, true);
+            btn.textContent = 'Aplicando...';
+            try {
+                const res = await fetch('/review_suggestions/' + noteId + '/accept', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    loadReview();  // recarrega a lista (a sugestão sai)
+                } else {
+                    setReviewButtonsDisabled(noteId, false);
+                    btn.textContent = '⚠️ ' + (data.message || 'Erro ao aplicar');
+                }
+            } catch (e) {
+                console.error(e);
+                setReviewButtonsDisabled(noteId, false);
+                btn.textContent = '⚠️ Erro de conexão';
+            }
+        }
+
+        async function dismissReview(noteId, btn) {
+            setReviewButtonsDisabled(noteId, true);
+            btn.textContent = 'Dispensando...';
+            try {
+                await fetch('/review_suggestions/' + noteId + '/dismiss', { method: 'POST' });
+                loadReview();
+            } catch (e) {
+                console.error(e);
+                setReviewButtonsDisabled(noteId, false);
                 btn.textContent = '⚠️ Erro de conexão';
             }
         }

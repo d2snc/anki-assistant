@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import threading
 import logging
@@ -41,6 +42,27 @@ openai_tts_client = None
 if os.getenv("OPENAI_API_KEY"):
     openai_tts_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
+# Cliente OpenRouter (modelos grátis) usado pelo revisor de flashcards em
+# background. OpenRouter é compatível com a API da OpenAI — basta trocar a
+# base_url. Se a chave não estiver no .env, o revisor cai no Groq/OpenAI.
+openrouter_client = None
+if os.getenv("OPENROUTER_API_KEY"):
+    openrouter_client = OpenAI(
+        api_key=os.environ.get("OPENROUTER_API_KEY"),
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+# Modelos grátis do OpenRouter, tentados em ordem (os maiores primeiro). O
+# último recurso é o cliente principal (Groq/OpenAI). Free tiers têm rate limit
+# baixo — daí a lista e o fallback, para o worker não travar quando um recusa.
+OPENROUTER_REVIEW_MODELS = [
+    "openai/gpt-oss-120b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nex-agi/nex-n2-pro:free",
+    "openai/gpt-oss-20b:free",
+    "nvidia/nemotron-3-nano-30b-a3b:free",
+]
+
 
 def strip_images_from_text(html_text):
     """Remove tags <img> e tags de áudio do Anki antes de converter para texto (TTS/avaliação)."""
@@ -73,30 +95,34 @@ try:
     from langdetect import DetectorFactory
     DetectorFactory.seed = 0  # resultados determinísticos
 
-    def is_english(text: str) -> bool:
-        """True se o texto for detectado como inglês pelo langdetect."""
-        if any(c in _PT_CHARS for c in text):
-            return False
-        clean = text.strip()
-        if not clean:
+    def is_english(*texts: str) -> bool:
+        """True se o conjunto de textos (pergunta + resposta) for majoritariamente
+        inglês. Combina tudo e deixa o langdetect decidir pela língua predominante,
+        de modo que a voz acompanhe a maioria do conteúdo, não um trecho isolado."""
+        combined = " ".join(t for t in texts if t).strip()
+        if not combined:
             return False
         try:
-            return _langdetect(clean) == "en"
+            return _langdetect(combined) == "en"
         except Exception:
-            return False
+            # Sem detecção possível: qualquer acento PT indica português.
+            return not any(c in _PT_CHARS for c in combined)
 
 except ImportError:
-    def is_english(text: str) -> bool:
-        """Fallback: detecta inglês por palavras função comuns."""
-        if any(c in _PT_CHARS for c in text):
+    def is_english(*texts: str) -> bool:
+        """Fallback sem langdetect: decide pela maioria entre palavras-função
+        inglesas e caracteres acentuados do português no texto combinado."""
+        combined = " ".join(t for t in texts if t)
+        if not combined.strip():
             return False
         _EN = frozenset({"the","is","are","was","were","what","which","how","why",
                          "when","where","who","that","this","with","from","for",
                          "and","but","not","have","has","had","will","would",
                          "should","could","can","may","might","of","in","at",
                          "by","on","be","been","do","does","did"})
-        words = set(re.findall(r'[a-z]+', text.lower()))
-        return bool(words & _EN)
+        en_hits = sum(1 for w in re.findall(r'[a-z]+', combined.lower()) if w in _EN)
+        pt_hits = sum(1 for c in combined if c in _PT_CHARS)
+        return en_hits > pt_hits
 
 # Audio settings (usados por desktop e web)
 SAMPLE_RATE = 16000
@@ -596,6 +622,109 @@ def evaluate_response(question, answer, user_response, lang="pt"):
     return score, feedback
 
 
+# ---------------------------------------------------------------------------
+# Revisor de flashcards (worker em background da versão web)
+# ---------------------------------------------------------------------------
+
+REVIEW_PROMPT = """Você é um especialista em flashcards eficazes (princípio do conhecimento mínimo).
+Avalie o flashcard abaixo e decida se ele precisa de melhoria.
+
+Critérios:
+- DIVIDIR ("split"): o cartão cobre informação demais (vários fatos ou itens numa só resposta) e ficaria melhor como vários cartões menores, cada um com um único fato.
+- EDITAR ("edit"): a pergunta ou a resposta está confusa, ambígua, prolixa ou não dá para responder objetivamente; reescreva de forma concisa e clara, mantendo o MESMO conteúdo.
+- OK ("ok"): o cartão já está bom (foco único, pergunta clara, resposta concisa).
+
+Regras absolutas:
+- NÃO invente fatos novos. Use apenas a informação já presente no cartão.
+- Mantenha o idioma original do cartão.
+- Ao dividir, distribua os fatos existentes entre os cartões; não duplique nem acrescente nada.
+- Seja conservador: só sugira mudança quando houver ganho claro. Na dúvida, responda "ok".
+
+Responda SOMENTE com um JSON válido, sem nenhum texto antes ou depois, neste formato exato:
+{"verdict": "ok", "reason": "<motivo curto em português>", "cards": []}
+- Se "edit", "cards" deve ter exatamente 1 item: [{"front": "<pergunta>", "back": "<resposta>"}].
+- Se "split", "cards" deve ter 2 ou mais itens, cada um {"front": "...", "back": "..."}.
+
+FLASHCARD:
+Frente: <<<FRONT>>>
+Verso: <<<BACK>>>"""
+
+
+def _review_chat(prompt):
+    """Chama um LLM grátis para revisar flashcards: tenta os modelos free do
+    OpenRouter em ordem e cai no cliente principal (Groq/OpenAI) como último
+    recurso. Devolve o texto da resposta ou None se tudo falhar."""
+    attempts = []
+    if openrouter_client is not None:
+        attempts.extend((openrouter_client, m) for m in OPENROUTER_REVIEW_MODELS)
+    attempts.append((openai_client, LLM_MODEL))
+
+    for client, model in attempts:
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+            content = resp.choices[0].message.content
+            if content and content.strip():
+                return content.strip()
+        except Exception as e:
+            log.warning(f"Revisor: modelo {model} falhou: {e}")
+            continue
+    return None
+
+
+def _parse_review_json(raw):
+    """Extrai e valida o JSON da resposta do revisor. Devolve dict normalizado
+    {verdict, reason, cards} ou None se a resposta for inválida."""
+    text = raw.strip()
+    # Remove cercas de código (```json ... ```), comuns em respostas de LLM.
+    text = re.sub(r'^```(?:json)?', '', text).strip()
+    text = re.sub(r'```$', '', text).strip()
+    # Pega o objeto JSON mais externo.
+    start, end = text.find('{'), text.rfind('}')
+    if start == -1 or end == -1 or end < start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    verdict = str(data.get("verdict", "")).lower().strip()
+    if verdict not in {"ok", "edit", "split"}:
+        return None
+
+    cards = []
+    for c in data.get("cards", []) or []:
+        if not isinstance(c, dict):
+            continue
+        front = str(c.get("front", "")).strip()
+        back = str(c.get("back", "")).strip()
+        if front or back:
+            cards.append({"front": front, "back": back})
+
+    # Coerência entre o veredito e a quantidade de cartões propostos.
+    if verdict == "ok":
+        cards = []
+    elif verdict == "edit" and len(cards) != 1:
+        return None
+    elif verdict == "split" and len(cards) < 2:
+        return None
+
+    return {"verdict": verdict, "reason": str(data.get("reason", "")).strip(), "cards": cards}
+
+
+def review_flashcard(front, back):
+    """Revisa um flashcard (texto da frente e do verso) e devolve um dict
+    {verdict, reason, cards} ou None se o LLM não respondeu de forma utilizável."""
+    prompt = REVIEW_PROMPT.replace("<<<FRONT>>>", front).replace("<<<BACK>>>", back)
+    raw = _review_chat(prompt)
+    if not raw:
+        return None
+    return _parse_review_json(raw)
+
+
 def main_backend(window):
     """Loop principal da versão desktop (pywebview)."""
     collection = Collection(ANKI_PATH)
@@ -632,7 +761,7 @@ def main_backend(window):
                 continue
 
             display_html(current_card.render_output(browser=True).question_and_style())
-            card_in_english = is_english(question)
+            card_in_english = is_english(question, answer_text)
             lang = "en" if card_in_english else "pt"
             voice = TTS_VOICE_EN if card_in_english else None
             speakable = make_latex_speakable(question)

@@ -13,6 +13,9 @@ cached_audio/
 # Histórico de sessões de estudo (dados pessoais)
 session_history.json
 
+# Sugestões de revisão de flashcards (cache do revisor em background)
+review_suggestions.json
+
 # Python
 __pycache__/
 *.pyc
