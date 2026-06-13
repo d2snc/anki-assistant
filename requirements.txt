@@ -1,5 +1,6 @@
 anki==23.10.1
-faster-whisper>=1.0.0
+openai
+python-dotenv
 html2text==2020.1.16
 google-genai
 edge-tts
@@ -10,3 +11,7 @@ PyQtWebEngine
 qtpy
 torch>=2.2.0
 silero-vad
+flask>=3.0
+flask-socketio>=5.3
+pyOpenSSL
+langdetect

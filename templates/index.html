@@ -1,0 +1,1373 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="description" content="Anki Voice Assistant — Estude flashcards com voz">
+    <title>Anki Voice Assistant</title>
+
+    <!-- KaTeX para LaTeX -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"
+        integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"
+        integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8"
+        crossorigin="anonymous"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+        integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
+
+    <!-- Socket.IO -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-card: #141829;
+            --bg-card-hover: #1a1f38;
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.3);
+            --success: #22c55e;
+            --success-glow: rgba(34, 197, 94, 0.25);
+            --error: #ef4444;
+            --error-glow: rgba(239, 68, 68, 0.25);
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border: rgba(255, 255, 255, 0.06);
+            --radius: 16px;
+            --radius-sm: 10px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            display: flex;
+            flex-direction: column;
+            transition: background-color 0.6s ease;
+        }
+
+        /* Flash overlay */
+        #flash-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            pointer-events: none;
+            z-index: 100;
+            opacity: 0;
+            transition: opacity 0.15s ease-in;
+        }
+        #flash-overlay.active {
+            opacity: 1;
+        }
+
+        /* Header */
+        header {
+            padding: 16px 20px 8px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        header h1 {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        /* Stats bar (andamento da sessão: new/learn/due) */
+        #stats-bar {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        #stats-bar .stat {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            transition: background-color 0.3s ease, border-color 0.3s ease;
+        }
+        /* Realça a fila (new/learn/due) em que o card atual se encontra */
+        #stats-bar .stat.active {
+            background: var(--accent-glow);
+            border-color: var(--accent);
+        }
+        #stats-bar .stat.active .stat-label {
+            color: var(--text-secondary);
+        }
+        #stats-bar .stat-label {
+            font-size: 0.6rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+        }
+        #stats-bar .stat-val {
+            font-size: 1.05rem;
+            font-weight: 700;
+            font-family: monospace;
+            min-width: 1.2em;
+            text-align: right;
+        }
+
+        /* Baralho do card atual */
+        #current-deck {
+            margin-top: 8px;
+            text-align: center;
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            padding: 0 16px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Card area */
+        #card-area {
+            flex: 1;
+            display: flex;
+            align-items: flex-start; /* Permite scroll vertical se for maior que a tela */
+            justify-content: center;
+            padding: 20px;
+            overflow-y: auto;
+            min-height: 0;
+        }
+
+        #card-wrapper {
+            margin: auto;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #card-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 28px 24px;
+            width: 100%;
+            max-width: 600px;
+            font-size: 1.15rem;
+            line-height: 1.6;
+            text-align: center;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        #card-content img {
+            max-width: 100%;
+            height: auto;
+            border-radius: var(--radius-sm);
+            margin: 8px 0;
+        }
+
+        /* Status bar */
+        #status-bar {
+            padding: 8px 20px;
+            text-align: center;
+            flex-shrink: 0;
+            min-height: 40px;
+        }
+        #status-text {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+        #transcription-text {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-style: italic;
+            margin-top: 4px;
+        }
+
+        /* Controls */
+        #controls {
+            padding: 12px 20px 32px;
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            align-items: center;
+            flex-shrink: 0;
+        }
+
+        .btn {
+            border: none;
+            border-radius: var(--radius-sm);
+            font-family: inherit;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .btn:active {
+            transform: scale(0.96);
+        }
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Record button — large, centered */
+        #btn-record {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: white;
+            font-size: 1.8rem;
+            box-shadow: 0 0 0 0 var(--accent-glow);
+            position: relative;
+        }
+        #btn-record:hover:not(:disabled) {
+            box-shadow: 0 0 20px 4px var(--accent-glow);
+        }
+        #btn-record.recording {
+            background: var(--error);
+            animation: pulse-record 1.4s ease-in-out infinite;
+        }
+
+        @keyframes pulse-record {
+            0%, 100% { box-shadow: 0 0 0 0 var(--error-glow); }
+            50% { box-shadow: 0 0 0 16px var(--error-glow); }
+        }
+
+        /* Secondary buttons */
+        .btn-secondary {
+            padding: 14px 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+        .btn-secondary:hover:not(:disabled) {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
+        }
+
+        /* Próximo button (success style) */
+        #btn-next {
+            padding: 14px 24px;
+            background: var(--accent);
+            color: white;
+        }
+        #btn-next:hover:not(:disabled) {
+            box-shadow: 0 0 16px var(--accent-glow);
+        }
+
+        /* Score badge */
+        #score-badge {
+            display: none;
+            margin: 12px auto;
+            padding: 6px 16px;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-align: center;
+            width: fit-content;
+        }
+        #score-badge.score-good {
+            background: var(--success-glow);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+        #score-badge.score-bad {
+            background: var(--error-glow);
+            color: var(--error);
+            border: 1px solid var(--error);
+        }
+
+        /* Loading spinner */
+        .spinner {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            border: 2px solid var(--text-muted);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Session end */
+        #session-end {
+            display: none;
+            text-align: center;
+            padding: 40px 20px;
+            margin: auto;
+            width: 100%;
+        }
+        #session-end .emoji {
+            font-size: 3rem;
+            margin-bottom: 16px;
+        }
+        #session-end p {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        /* Initial state */
+        #start-screen {
+            text-align: center;
+            padding: 20px;
+            margin: auto;
+            width: 100%;
+        }
+        #start-screen .emoji {
+            font-size: 3.5rem;
+            margin-bottom: 20px;
+        }
+        #start-screen h2 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        #start-screen p {
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+            margin-bottom: 28px;
+        }
+        #btn-start {
+            padding: 16px 40px;
+            background: var(--accent);
+            color: white;
+            font-size: 1.05rem;
+            border-radius: var(--radius);
+        }
+        #btn-start:hover {
+            box-shadow: 0 0 24px var(--accent-glow);
+        }
+        .btn-sync {
+            background: transparent;
+            color: var(--accent);
+            border: 1px solid var(--accent);
+            margin: 0 auto 24px;
+            font-size: 0.9rem;
+            padding: 8px 16px;
+        }
+        .btn-sync:hover:not(:disabled) {
+            background: var(--accent);
+            color: white;
+        }
+
+        /* Deck List */
+        .decks-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 100%;
+            max-width: 600px;
+            margin: 16px auto 0;
+            text-align: left;
+        }
+        .deck-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 16px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .deck-item:hover {
+            border-color: var(--accent);
+            box-shadow: 0 0 12px var(--accent-glow);
+        }
+        .deck-name {
+            font-size: 1.05rem;
+            font-weight: 500;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .deck-counts {
+            display: flex;
+            gap: 12px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            font-family: monospace;
+        }
+        .count-new { color: #00a8ff; }
+        .count-learn { color: #e84118; }
+        .count-review { color: #4cd137; }
+        .count-zero { color: var(--text-muted); font-weight: 400; }
+
+        /* Listening indicator */
+        .listening-dots {
+            display: inline-flex;
+            gap: 4px;
+            align-items: center;
+            vertical-align: middle;
+            margin-left: 4px;
+        }
+        .listening-dots span {
+            width: 5px;
+            height: 5px;
+            background: var(--accent);
+            border-radius: 50%;
+            animation: bounce-dot 1.2s ease-in-out infinite;
+        }
+        .listening-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .listening-dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes bounce-dot {
+            0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+            40% { transform: translateY(-6px); opacity: 1; }
+        }
+
+        /* Cronômetro da sessão */
+        #session-timer {
+            margin-top: 6px;
+            text-align: center;
+            font-size: 0.95rem;
+            font-weight: 700;
+            font-family: monospace;
+            color: var(--text-secondary);
+            letter-spacing: 0.05em;
+        }
+
+        /* Resumo da sessão (tela final) */
+        #session-summary {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            max-width: 360px;
+            margin: 24px auto 0;
+        }
+        .summary-item {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 14px;
+            text-align: center;
+        }
+        .summary-item .summary-val {
+            font-size: 1.5rem;
+            font-weight: 700;
+            font-family: monospace;
+            color: var(--text-primary);
+        }
+        .summary-item .summary-label {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-top: 4px;
+        }
+        .summary-detail {
+            grid-column: 1 / -1;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-top: 2px;
+            letter-spacing: 0.04em;
+        }
+
+        /* Botões do topo da tela inicial (sync + histórico) */
+        .top-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 22px;
+        }
+        .top-actions .btn-sync {
+            margin: 0;
+        }
+
+        /* Modal de histórico */
+        #history-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 200;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+        .history-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            width: 100%;
+            max-width: 560px;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+        }
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+        .history-header h2 {
+            font-size: 1.05rem;
+            font-weight: 700;
+        }
+        .history-close {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.3rem;
+            cursor: pointer;
+            padding: 0 6px;
+            line-height: 1;
+        }
+        #history-totals {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            text-align: center;
+            flex-shrink: 0;
+        }
+        #history-list {
+            overflow-y: auto;
+            padding: 8px 14px 16px;
+        }
+        .history-item {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 12px 14px;
+            margin: 8px 0;
+        }
+        .history-item .hist-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 10px;
+        }
+        .history-item .hist-deck {
+            font-weight: 600;
+            font-size: 0.92rem;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .history-item .hist-acc {
+            font-weight: 700;
+            font-family: monospace;
+            font-size: 0.95rem;
+            flex-shrink: 0;
+        }
+        .hist-acc.good { color: var(--success); }
+        .hist-acc.mid { color: #eab308; }
+        .hist-acc.bad { color: var(--error); }
+        .history-item .hist-meta {
+            margin-top: 7px;
+            font-size: 0.76rem;
+            color: var(--text-muted);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 12px;
+        }
+        .history-empty {
+            text-align: center;
+            color: var(--text-muted);
+            padding: 30px 20px;
+        }
+
+        /* Galeria de cartões ruins (reusa #history-totals / #gallery-totals via id) */
+        #gallery-totals {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            text-align: center;
+            flex-shrink: 0;
+        }
+        #gallery-list {
+            overflow-y: auto;
+            padding: 8px 14px 16px;
+        }
+        .gallery-item {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 12px 14px;
+            margin: 8px 0;
+        }
+        .gallery-item .gal-deck {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .gallery-item .gal-q {
+            font-weight: 600;
+            font-size: 0.92rem;
+            color: var(--text-primary);
+            white-space: pre-wrap;
+        }
+        .gallery-item .gal-a {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 6px;
+            padding-top: 6px;
+            border-top: 1px solid var(--border);
+            white-space: pre-wrap;
+        }
+        .gallery-item .gal-remove {
+            margin-top: 10px;
+            width: 100%;
+            padding: 8px 12px;
+            font-size: 0.82rem;
+            background: transparent;
+            border: 1px solid var(--success);
+            color: var(--success);
+            border-radius: var(--radius-sm);
+        }
+        .gallery-item .gal-remove:hover:not(:disabled) {
+            background: var(--success);
+            color: var(--bg-primary);
+        }
+
+        /* Hide elements by state */
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <div id="flash-overlay"></div>
+
+    <header>
+        <h1>Anki Voice Assistant</h1>
+        <div id="stats-bar" class="hidden">
+            <div class="stat" id="stat-box-new"><span class="stat-label">New</span><span id="stat-new" class="stat-val count-new">0</span></div>
+            <div class="stat" id="stat-box-learn"><span class="stat-label">Learn</span><span id="stat-learn" class="stat-val count-learn">0</span></div>
+            <div class="stat" id="stat-box-review"><span class="stat-label">Due</span><span id="stat-review" class="stat-val count-review">0</span></div>
+        </div>
+        <div id="current-deck" class="hidden"></div>
+        <div id="session-timer" class="hidden">⏱ <span id="timer-display">00:00</span></div>
+    </header>
+
+    <div id="card-area">
+        <!-- Start screen -->
+        <div id="start-screen">
+            <div class="top-actions">
+                <button id="btn-sync" class="btn btn-sync" onclick="syncAnki()">☁️ Sincronizar</button>
+                <button class="btn btn-sync" onclick="openHistory()">📊 Histórico</button>
+                <button class="btn btn-sync" onclick="openGallery()">🚩 Cartões ruins</button>
+            </div>
+            <div class="emoji">🎙️</div>
+            <h2>Anki Voice</h2>
+            <p id="start-subtitle">Carregando seus decks...</p>
+            <div id="decks-container" class="decks-list hidden"></div>
+        </div>
+
+        <!-- Card content (hidden initially) -->
+        <div id="card-wrapper" class="hidden">
+            <div id="card-content">Carregando...</div>
+            <div id="score-badge"></div>
+        </div>
+
+        <!-- Session end (hidden initially) -->
+        <div id="session-end">
+            <div class="emoji">🎉</div>
+            <p id="session-end-msg"></p>
+            <div id="session-summary"></div>
+        </div>
+    </div>
+
+    <!-- Modal de histórico de sessões -->
+    <div id="history-modal" class="hidden" onclick="if (event.target === this) closeHistory()">
+        <div class="history-content">
+            <div class="history-header">
+                <h2>📊 Histórico de sessões</h2>
+                <button class="history-close" onclick="closeHistory()">✕</button>
+            </div>
+            <div id="history-totals"></div>
+            <div id="history-list"></div>
+        </div>
+    </div>
+
+    <!-- Modal da galeria de cartões ruins -->
+    <div id="gallery-modal" class="hidden" onclick="if (event.target === this) closeGallery()">
+        <div class="history-content">
+            <div class="history-header">
+                <h2>🚩 Cartões ruins</h2>
+                <button class="history-close" onclick="closeGallery()">✕</button>
+            </div>
+            <div id="gallery-totals"></div>
+            <div id="gallery-list"></div>
+        </div>
+    </div>
+
+    <div id="status-bar">
+        <div id="status-text"></div>
+        <div id="transcription-text"></div>
+    </div>
+
+    <div id="controls">
+        <button id="btn-skip" class="btn btn-secondary hidden" onclick="skipCard()">
+            ⏭ Pular
+        </button>
+        <button id="btn-record" class="btn hidden" onclick="toggleRecording()" disabled>
+            🎤
+        </button>
+        <button id="btn-bad" class="btn btn-secondary hidden" onclick="flagBadCard()">
+            🚩 Ruim
+        </button>
+        <button id="btn-next" class="btn hidden" onclick="nextCard()">
+            Próximo →
+        </button>
+    </div>
+
+    <script>
+        // ---- State ----
+        let socket;
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+        let currentAnswerText = '';
+        let audioQueue = [];
+        let isPlayingAudio = false;
+        let globalAudio = new Audio();
+        let beepAudio = new Audio('data:audio/wav;base64,UklGRtQEAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YbAEAACA0PzvrlkWAyp5yvnxtWEbAyVxwvb0vGkhBCFpu/P1wnEmBR1itO/3yHktBxlbrOr3zYAzCRZUpeb40oc6DBRNneH3149ADxFHltv325ZHEhBBjtb1351OFg87h9D04qRVGg42gMry5apdHw4xecPv6LBkJA4tcr3s6rZrKQ8pa7bp67xyLhAlZK/l7MF5NBIiXqnh7caAOhQfWKLd7cuGQBYdUpvY7c+NRhkbTJTT7NOUTBwaR43O69aaUyAZQobJ6dmgWSMYPYDD59ymYCgYOXq95d6sZywZNXO34uCxbTEZMW2x3+G2dDYaLmer3OK7ejscK2Gl2OLAgEAeKVye1OPEhkYgJ1aY0OLHjEwjJVGSy+HLklEmJEyMxuDOmFcpI0iGwd/QnV0tI0SAvN3TomMxI0B7t9vVp2k1Izx1sdjWrG85JDlvrNXXsXU+JTZqptLYtXtCJzRloc/YuYBHKDJgm8vYvYVMKjBblsfYwItRLS9WkMPXw5BXMC5Sir/WxZVcMy1OhbrUyJphNi1KgLXSyZ9nOi1He7HQy6NsPS5EdqzOzKdxQS5BcafLzat2RTA/bKLIzq97SjE9aJ3FzrKATjM7Y5jCzrWEUjU6X5O+zbiJVzc5W467zLuOXDo4WIm3y72SYDw4VISzyr+XZT84UYCvyMCbakI4TnyqxsGebkY4THemxMKic0k5SnOiwsOleE06SG+dv8OpfFE8RmuZvMOrgFU9RGeVucOuhFk/Q2SQtsKwiF1BQ2CMs8KyjGFDQl2Ir8G0kGVGQluErL+2k2lJQliAqL63l21LQlZ9pLy4mnFOQ1R5oLq4nXVSRFJ1nbi5oHlVRVBymbW5on1YRk9ulbO5pYBbSE5rkbC5p4NfSU1ojq24qYdiS0xmiqq3qopmTUxjhqe2rI1pT0xhg6S1rZBtUkxfgKGzrpNwVE1dfZ6yrpV0V01bepuwr5h3Wk5ad5iur5p6XE9ZdJSsr5x9X1FYcpGqrp6AYlJXb46nrqCCZVNXbYulraGFaFVWa4iirKKIa1dWaYWgq6OKbllWZ4KdqqSNcVtXZYCaqaSPdF1XZH6Yp6WRdmBYY3uVpqWTeWJZYnmSpKWUfGRaYXeQoqWWfmdbYXWNoKSXgGlcYHOLnqSYgmteYHGInKOZhG5fYHCGmqKahnBhYG6EmKGaiHJjYW2ClqCbiXVkYWyAlJ6bi3dmYmt/kp2bjHloY2t9j5ybjntqY2p7jZqbj31sZGp6i5makH9uZmp4iZeakIBwZ2p3iJWZkYFyaGp2hpSYkYNzaWp1hJKXkoR1a2p0gpCWkoV3bGtzgY+VkoZ5bmxzgI2Ukod6b2xzf4uTkoh8cW1yfoqSkYl9cm5yfYiQkYl+dG9yfIePkIl/dXBze4WOj4qAdnFze4SMj4qAeHJzeoOLjoqBeXN0eoKKjYqCenV0eoGJjImDe3Z1eoCHi4mDfHd2eoCGioiDfXh3eoCFiYiDfnl4en+EiIeDf3p5en+DhoeDgHt6e3+ChYaDgHx7e3+ChIWDgH18fH+Bg4SDgH59fX+AgoOCgH99fn+AgoKBgH9+fn+AgYGBgIB/f4CAgICAgICAgIA=');
+
+        // Mic Stream and Recording Timer
+        let globalStream = null;
+        let globalAnalyser = null;
+        let recordingTimer = null;
+        const RECORDING_DURATION_MS = 8000; // 8 segundos de gravação padrão
+
+        // ---- DOM refs ----
+        const startScreen = document.getElementById('start-screen');
+        const cardWrapper = document.getElementById('card-wrapper');
+        const cardContent = document.getElementById('card-content');
+        const scoreBadge = document.getElementById('score-badge');
+        const statusText = document.getElementById('status-text');
+        const transcriptionText = document.getElementById('transcription-text');
+        const btnRecord = document.getElementById('btn-record');
+        const btnSkip = document.getElementById('btn-skip');
+        const btnBad = document.getElementById('btn-bad');
+        const btnNext = document.getElementById('btn-next');
+        const sessionEnd = document.getElementById('session-end');
+        const sessionEndMsg = document.getElementById('session-end-msg');
+        const flashOverlay = document.getElementById('flash-overlay');
+        const statsBar = document.getElementById('stats-bar');
+        const currentDeck = document.getElementById('current-deck');
+        const sessionTimer = document.getElementById('session-timer');
+        const timerDisplay = document.getElementById('timer-display');
+        const sessionSummary = document.getElementById('session-summary');
+        const historyModal = document.getElementById('history-modal');
+        const historyList = document.getElementById('history-list');
+        const historyTotals = document.getElementById('history-totals');
+        const galleryModal = document.getElementById('gallery-modal');
+        const galleryList = document.getElementById('gallery-list');
+        const galleryTotals = document.getElementById('gallery-totals');
+
+        // ---- Session timer (cronômetro) ----
+        let sessionStartMs = null;
+        let timerInterval = null;
+
+        function formatDuration(totalSec) {
+            totalSec = Math.max(0, Math.floor(totalSec));
+            const h = Math.floor(totalSec / 3600);
+            const m = Math.floor((totalSec % 3600) / 60);
+            const s = totalSec % 60;
+            const pad = (n) => String(n).padStart(2, '0');
+            return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+        }
+
+        function updateTimer() {
+            if (sessionStartMs === null) return;
+            timerDisplay.textContent = formatDuration((Date.now() - sessionStartMs) / 1000);
+        }
+
+        function startSessionTimer() {
+            sessionStartMs = Date.now();
+            updateTimer();
+            if (timerInterval) clearInterval(timerInterval);
+            timerInterval = setInterval(updateTimer, 1000);
+        }
+
+        function stopSessionTimer() {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+        }
+
+        // ---- Audio playback ----
+        function playAudioBase64(b64, callback) {
+            const bytes = atob(b64);
+            const buf = new Uint8Array(bytes.length);
+            for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
+            const blob = new Blob([buf], { type: 'audio/mpeg' });
+            const url = URL.createObjectURL(blob);
+            
+            globalAudio.src = url;
+            globalAudio.onended = () => {
+                URL.revokeObjectURL(url);
+                if (callback) callback();
+            };
+            globalAudio.onerror = () => {
+                URL.revokeObjectURL(url);
+                if (callback) callback();
+            };
+            
+            globalAudio.play().catch(e => {
+                console.error("Erro ao tocar áudio:", e);
+                if (callback) callback();
+            });
+        }
+
+        // ---- Flash screen ----
+        function flashScreen(color) {
+            flashOverlay.style.backgroundColor = color;
+            flashOverlay.classList.add('active');
+            setTimeout(() => flashOverlay.classList.remove('active'), 800);
+        }
+
+        // ---- UI State management ----
+        function showState(state) {
+            startScreen.classList.toggle('hidden', state !== 'start');
+            cardWrapper.classList.toggle('hidden', state !== 'card' && state !== 'result');
+            sessionEnd.classList.toggle('hidden', state !== 'end');
+            statsBar.classList.toggle('hidden', state !== 'card' && state !== 'result');
+            currentDeck.classList.toggle('hidden', state !== 'card' && state !== 'result');
+            sessionTimer.classList.toggle('hidden', state !== 'card' && state !== 'result');
+
+            btnRecord.classList.toggle('hidden', state !== 'card');
+            btnSkip.classList.toggle('hidden', state !== 'card');
+            btnBad.classList.toggle('hidden', state !== 'card');
+            btnNext.classList.toggle('hidden', state !== 'result');
+
+            if (state === 'card') {
+                scoreBadge.style.display = 'none';
+                transcriptionText.textContent = '';
+            }
+        }
+
+        function setStatus(msg) {
+            statusText.innerHTML = msg;
+        }
+
+        // ---- Decks fetch ----
+        window.onload = async () => {
+            try {
+                const res = await fetch('/decks');
+                const data = await res.json();
+                renderDecks(data.decks);
+            } catch(e) {
+                console.error(e);
+                document.getElementById('start-subtitle').textContent = "Erro ao carregar decks. Anki está aberto?";
+            }
+        };
+
+        function renderDecks(decks) {
+            const container = document.getElementById('decks-container');
+            document.getElementById('start-subtitle').textContent = "Selecione um deck para estudar:";
+            container.innerHTML = '';
+            container.classList.remove('hidden');
+            
+            decks.forEach(deck => {
+                const item = document.createElement('div');
+                item.className = 'deck-item';
+                item.style.marginLeft = (deck.level * 16) + 'px';
+                
+                item.innerHTML = `
+                    <div class="deck-name">${deck.name}</div>
+                    <div class="deck-counts">
+                        <span class="${deck.new > 0 ? 'count-new' : 'count-zero'}">${deck.new}</span>
+                        <span class="${deck.learn > 0 ? 'count-learn' : 'count-zero'}">${deck.learn}</span>
+                        <span class="${deck.review > 0 ? 'count-review' : 'count-zero'}">${deck.review}</span>
+                    </div>
+                `;
+                item.onclick = () => startSession(deck.id);
+                container.appendChild(item);
+            });
+        }
+
+        async function syncAnki() {
+            const btn = document.getElementById('btn-sync');
+            btn.disabled = true;
+            btn.textContent = '⏳ Sincronizando...';
+            try {
+                const res = await fetch('/sync', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    btn.textContent = '✅ Sincronizado!';
+                } else {
+                    btn.textContent = '⚠️ Erro: ' + data.message;
+                }
+            } catch (e) {
+                btn.textContent = '⚠️ Erro de conexão';
+            }
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = '☁️ Sincronizar';
+            }, 4000);
+        }
+
+        // ---- Socket.IO ----
+        async function startSession(deckId) {
+            // "Destrava" os elementos de áudio no primeiro toque do usuário
+            globalAudio.play().catch(() => {});
+            beepAudio.play().catch(() => {});
+            
+            // Destrava o contexto de áudio avançado e pega a permissão do microfone de forma global!
+            setStatus('Iniciando microfone...');
+            if (!window.globalAudioContext) {
+                window.globalAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (window.globalAudioContext.state === 'suspended') {
+                window.globalAudioContext.resume();
+            }
+            
+            try {
+                if (!globalStream) {
+                    globalStream = await navigator.mediaDevices.getUserMedia({
+                        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
+                    });
+                    const source = window.globalAudioContext.createMediaStreamSource(globalStream);
+                    globalAnalyser = window.globalAudioContext.createAnalyser();
+                    globalAnalyser.fftSize = 512;
+                    source.connect(globalAnalyser);
+                }
+            } catch(e) {
+                console.error("Microfone error:", e);
+                setStatus('⚠️ Erro: Microfone não autorizado');
+                return;
+            }
+
+            showState('card');
+            startSessionTimer();
+            setStatus('Conectando ao servidor...');
+
+            socket = io({ transports: ['websocket'] });
+
+            socket.on('connect', () => {
+                setStatus('Carregando cards...');
+                socket.emit('start_session', { deck_id: deckId });
+            });
+
+            socket.on('stats', (data) => {
+                document.getElementById('stat-new').textContent = data.new;
+                document.getElementById('stat-learn').textContent = data.learn;
+                document.getElementById('stat-review').textContent = data.review;
+
+                // Realça a fila em que o card atual está (new/learn/due)
+                const boxes = {
+                    new: document.getElementById('stat-box-new'),
+                    learn: document.getElementById('stat-box-learn'),
+                    review: document.getElementById('stat-box-review'),
+                };
+                Object.values(boxes).forEach(el => el.classList.remove('active'));
+                if (boxes[data.current_state]) {
+                    boxes[data.current_state].classList.add('active');
+                }
+
+                // Mostra em qual baralho está o card atual
+                if (data.current_deck) {
+                    currentDeck.textContent = '📚 ' + data.current_deck.replace(/::/g, ' › ');
+                    currentDeck.classList.remove('hidden');
+                }
+            });
+
+            socket.on('card_html', (data) => {
+                currentAnswerText = data.answer_text;
+                cardContent.innerHTML = data.html;
+                // Render KaTeX if available
+                if (typeof renderMathInElement === 'function') {
+                    renderMathInElement(cardContent);
+                }
+                showState('card');
+                btnRecord.disabled = true;
+                btnSkip.disabled = false;
+                btnBad.disabled = false;
+                setStatus('Ouvindo pergunta <span class="listening-dots"><span></span><span></span><span></span></span>');
+            });
+
+            socket.on('question_tts', (data) => {
+                playAudioBase64(data.audio, () => {
+                    // Auto-inicia gravação imediatamente após a pergunta
+                    startRecording();
+                });
+            });
+
+            socket.on('status', (data) => {
+                setStatus('<span class="spinner"></span> ' + data.message);
+            });
+
+            socket.on('transcription', (data) => {
+                transcriptionText.textContent = '📝 "' + data.text + '"';
+            });
+
+            socket.on('result', (data) => {
+                flashScreen(data.flash_color);
+
+                scoreBadge.style.display = 'block';
+                if (data.score >= 4) {
+                    scoreBadge.textContent = '✅ Nota ' + data.score;
+                    scoreBadge.className = 'score-good';
+                } else {
+                    scoreBadge.textContent = '❌ Nota ' + data.score;
+                    scoreBadge.className = 'score-bad';
+                }
+
+                if (data.feedback) {
+                    setStatus(data.feedback);
+                } else {
+                    setStatus(data.score >= 4 ? 'Acertou!' : 'Errou');
+                }
+            });
+
+            socket.on('show_answer', (data) => {
+                cardContent.innerHTML = data.html;
+                if (typeof renderMathInElement === 'function') {
+                    renderMathInElement(cardContent);
+                }
+            });
+
+            socket.on('feedback_tts', (data) => {
+                playAudioBase64(data.audio, () => {
+                    // Passa automaticamente para a próxima pergunta após o áudio terminar
+                    socket.emit('next_card');
+                });
+            });
+
+            socket.on('session_end', (data) => {
+                stopSessionTimer();
+                sessionEndMsg.textContent = data.message;
+                renderSessionSummary(data.summary);
+                showState('end');
+                setStatus('');
+            });
+
+            socket.on('error', (data) => {
+                setStatus('⚠️ ' + data.message);
+            });
+
+            socket.on('disconnect', () => {
+                stopSessionTimer();
+                setStatus('Desconectado do servidor');
+            });
+        }
+
+        // ---- Audio Feedback ----
+        function playBeep() {
+            try {
+                beepAudio.currentTime = 0;
+                beepAudio.play().catch(e => console.warn("Beep failed", e));
+            } catch(e) {}
+        }
+
+        // ---- Recording ----
+        async function toggleRecording() {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                await startRecording();
+            }
+        }
+
+        async function startRecording() {
+            try {
+                if (!globalStream || !globalStream.active) {
+                    globalStream = await navigator.mediaDevices.getUserMedia({
+                        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
+                    });
+                    
+                    if (window.globalAudioContext && globalAnalyser) {
+                        const source = window.globalAudioContext.createMediaStreamSource(globalStream);
+                        source.connect(globalAnalyser);
+                    }
+                }
+
+                audioChunks = [];
+                mediaRecorder = new MediaRecorder(globalStream, {
+                    mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                        ? 'audio/webm;codecs=opus'
+                        : 'audio/webm'
+                });
+
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) audioChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    stopRecordingTimer();
+                    // Não encerramos as trilhas do globalStream aqui, mantemos aberto!
+                    sendAudio();
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                playBeep(); // Toca o bipe exatamente quando o microfone já está pronto e gravando
+                btnRecord.classList.add('recording');
+                btnRecord.textContent = '⏹';
+                btnRecord.disabled = false;
+                btnSkip.disabled = true;
+                btnBad.disabled = true;
+                setStatus('Gravando... fale sua resposta');
+
+                // Inicia timer de gravação de 8 segundos
+                startRecordingTimer();
+            } catch (err) {
+                setStatus('⚠️ Erro na gravação: ' + (err.message || err.name));
+                console.error("Recording error:", err);
+            }
+        }
+
+        function stopRecording() {
+            stopRecordingTimer();
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            isRecording = false;
+            btnRecord.classList.remove('recording');
+            btnRecord.textContent = '🎤';
+            btnRecord.disabled = true;
+            btnSkip.disabled = true;
+            setStatus('<span class="spinner"></span> Enviando áudio...');
+        }
+
+        // ---- Recording Timer ----
+        function startRecordingTimer() {
+            if (recordingTimer) {
+                clearTimeout(recordingTimer);
+            }
+            setStatus('🔴 Gravando... (8s)');
+            recordingTimer = setTimeout(() => {
+                if (isRecording) {
+                    setStatus('Tempo esgotado, finalizando gravação...');
+                    stopRecording();
+                }
+            }, RECORDING_DURATION_MS);
+        }
+
+        function stopRecordingTimer() {
+            if (recordingTimer) {
+                clearTimeout(recordingTimer);
+                recordingTimer = null;
+            }
+        }
+
+        function sendAudio() {
+            if (audioChunks.length === 0) {
+                setStatus('⚠️ Nenhum áudio gravado');
+                return;
+            }
+            const blob = new Blob(audioChunks, { type: 'audio/webm' });
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const b64 = reader.result.split(',')[1];
+                socket.emit('audio_answer', {
+                    audio: b64,
+                    answer_text: currentAnswerText,
+                });
+            };
+            reader.readAsDataURL(blob);
+        }
+
+        // ---- Navigation ----
+        function skipCard() {
+            socket.emit('skip_card');
+            setStatus('Pulando...');
+        }
+
+        function nextCard() {
+            socket.emit('next_card');
+            setStatus('Carregando próximo card...');
+        }
+
+        function flagBadCard() {
+            btnBad.disabled = true;
+            btnSkip.disabled = true;
+            socket.emit('flag_bad_card');
+            setStatus('🚩 Marcado como ruim. Vai pra galeria.');
+        }
+
+        // ---- Session summary (tela final) ----
+        function renderSessionSummary(summary) {
+            if (!summary) {
+                sessionSummary.innerHTML = '';
+                return;
+            }
+            const items = [
+                { val: formatDuration(summary.duration_sec), label: 'Tempo' },
+                { val: summary.answered, label: 'Cards' },
+                { val: summary.accuracy + '%', label: 'Acerto' },
+                { val: summary.avg_score, label: 'Nota média' },
+            ];
+            let html = items.map((i) =>
+                `<div class="summary-item"><div class="summary-val">${i.val}</div><div class="summary-label">${i.label}</div></div>`
+            ).join('');
+            const skipped = summary.skipped ? `  ·  ⏭ ${summary.skipped}` : '';
+            html += `<div class="summary-detail">✅ ${summary.correct}  ·  ❌ ${summary.wrong}${skipped}</div>`;
+            sessionSummary.innerHTML = html;
+        }
+
+        // ---- History (histórico de sessões) ----
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str == null ? '' : String(str);
+            return div.innerHTML;
+        }
+
+        function accClass(acc) {
+            if (acc >= 80) return 'good';
+            if (acc >= 50) return 'mid';
+            return 'bad';
+        }
+
+        function formatDateTime(iso) {
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return iso;
+            return d.toLocaleString('pt-BR', {
+                day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+            });
+        }
+
+        async function openHistory() {
+            historyModal.classList.remove('hidden');
+            historyTotals.textContent = '';
+            historyList.innerHTML = '<p class="history-empty">Carregando...</p>';
+            try {
+                const res = await fetch('/history');
+                const data = await res.json();
+                renderHistory(data);
+            } catch (e) {
+                console.error(e);
+                historyList.innerHTML = '<p class="history-empty">Erro ao carregar histórico</p>';
+            }
+        }
+
+        function closeHistory() {
+            historyModal.classList.add('hidden');
+        }
+
+        function renderHistory(data) {
+            const sessions = data.sessions || [];
+            const t = data.totals || {};
+            if (sessions.length === 0) {
+                historyTotals.textContent = '';
+                historyList.innerHTML = '<p class="history-empty">Nenhuma sessão registrada ainda.</p>';
+                return;
+            }
+            historyTotals.innerHTML =
+                `${t.sessions} sessões · ${t.answered} cards · ${t.accuracy}% de acerto · ${formatDuration(t.duration_sec)} no total`;
+            historyList.innerHTML = sessions.map((s) => {
+                const deck = escapeHtml(s.deck).replace(/::/g, ' › ');
+                const skipped = s.skipped ? ` ⏭ ${s.skipped}` : '';
+                return `
+                    <div class="history-item">
+                        <div class="hist-top">
+                            <span class="hist-deck">${deck}</span>
+                            <span class="hist-acc ${accClass(s.accuracy)}">${s.accuracy}%</span>
+                        </div>
+                        <div class="hist-meta">
+                            <span>📅 ${formatDateTime(s.started_at)}</span>
+                            <span>⏱ ${formatDuration(s.duration_sec)}</span>
+                            <span>📦 ${s.answered} cards</span>
+                            <span>✅ ${s.correct} ❌ ${s.wrong}${skipped}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // ---- Galeria de cartões ruins ----
+        async function openGallery() {
+            galleryModal.classList.remove('hidden');
+            galleryTotals.textContent = '';
+            galleryList.innerHTML = '<p class="history-empty">Carregando...</p>';
+            try {
+                const res = await fetch('/bad_cards');
+                const data = await res.json();
+                renderGallery(data.cards || []);
+            } catch (e) {
+                console.error(e);
+                galleryList.innerHTML = '<p class="history-empty">Erro ao carregar galeria</p>';
+            }
+        }
+
+        function closeGallery() {
+            galleryModal.classList.add('hidden');
+        }
+
+        function renderGallery(cards) {
+            if (cards.length === 0) {
+                galleryTotals.textContent = '';
+                galleryList.innerHTML = '<p class="history-empty">Nenhum cartão marcado como ruim.</p>';
+                return;
+            }
+            galleryTotals.textContent =
+                `${cards.length} ${cards.length === 1 ? 'cartão marcado' : 'cartões marcados'} · edite no Anki e remova daqui`;
+            galleryList.innerHTML = cards.map((c) => {
+                const deck = escapeHtml(c.deck).replace(/::/g, ' › ');
+                const q = escapeHtml(c.question) || '<em>(sem pergunta)</em>';
+                const a = escapeHtml(c.answer) || '<em>(sem resposta)</em>';
+                return `
+                    <div class="gallery-item">
+                        <div class="gal-deck">📚 ${deck}</div>
+                        <div class="gal-q">${q}</div>
+                        <div class="gal-a">${a}</div>
+                        <button class="gal-remove" onclick="removeBadCard(${c.note_id}, this)">✓ Editei — remover da galeria</button>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function removeBadCard(noteId, btn) {
+            btn.disabled = true;
+            btn.textContent = 'Removendo...';
+            try {
+                const res = await fetch('/bad_cards/' + noteId, { method: 'DELETE' });
+                const data = await res.json();
+                if (data.success) {
+                    openGallery();  // recarrega a lista
+                } else {
+                    btn.disabled = false;
+                    btn.textContent = '⚠️ Erro ao remover';
+                }
+            } catch (e) {
+                console.error(e);
+                btn.disabled = false;
+                btn.textContent = '⚠️ Erro de conexão';
+            }
+        }
+    </script>
+</body>
+</html>
