@@ -215,6 +215,23 @@ def is_basic_note(card):
     return "basic" in name
 
 
+# O template Back do Basic é `{{FrontSide}}<hr id=answer>{{Back}}`, então a
+# resposta renderizada repete a pergunta antes do <hr id=answer>. Casa o hr com
+# ou sem aspas no id (variações do Anki).
+_ANSWER_HR = re.compile(r'<hr\s+id=["\']?answer["\']?[^>]*>', re.IGNORECASE)
+
+
+def answer_only_html(answer_html):
+    """Devolve só a parte da resposta (Back), sem repetir a pergunta (FrontSide).
+
+    Usado para o TTS não falar a pergunta de novo ao ler a resposta e para a
+    avaliação comparar contra o gabarito limpo. Se não houver o <hr id=answer>
+    (note types customizados), devolve o HTML inteiro como fallback.
+    """
+    parts = _ANSWER_HR.split(answer_html, maxsplit=1)
+    return parts[1] if len(parts) > 1 else answer_html
+
+
 # Filas do Anki (campo queue do card): 0=new, 1=learning intradiário, 2=review
 # (Due), 3=day-learn. Só a 1 (learning intradiário) trava no topo da fila.
 QUEUE_LEARN_INTRADAY = 1
@@ -283,7 +300,9 @@ def advance_card():
             col.sched.bury_cards([card.id])  # remove o card quebrado do topo da fila
             continue
 
-        answer_text = html2text(strip_images_from_text(answer_html)).strip()
+        # Resposta SEM a pergunta repetida (FrontSide): vale tanto para o TTS
+        # quanto para o gabarito da avaliação.
+        answer_text = html2text(strip_images_from_text(answer_only_html(answer_html))).strip()
         question = html2text(strip_images_from_text(question_html)).strip()
 
         if not answer_text:
@@ -601,11 +620,11 @@ def handle_audio_answer(data):
         else:
             tts_text = f"Você errou. {feedback} A resposta correta é: {answer_spoken}" if feedback else f"Você errou. A resposta correta é: {answer_spoken}"
 
-        # Envia HTML da resposta
-        answer_html = card.render_output(browser=True).answer_and_style()
-        answer_html = re.sub(r'src="(?!http)', 'src="/media/', answer_html)
-        answer_html = answer_html.replace('src="/media//media/', 'src="/media/')
-        emit("show_answer", {"html": answer_html})
+    # Mostra a resposta na tela (com imagem) tanto no acerto quanto no erro.
+    answer_html = card.render_output(browser=True).answer_and_style()
+    answer_html = re.sub(r'src="(?!http)', 'src="/media/', answer_html)
+    answer_html = answer_html.replace('src="/media//media/', 'src="/media/')
+    emit("show_answer", {"html": answer_html})
 
     # Atualiza o painel imediatamente após responder: o card.load() feito por
     # answerCard já deixou o card no estado novo (ex.: erro → fila 'learn'),
