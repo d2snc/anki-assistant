@@ -455,6 +455,20 @@
             color: var(--text-secondary);
             letter-spacing: 0.05em;
         }
+        /* Previsão de término da fila ativa (Due → New → Learn) */
+        #session-eta {
+            margin-top: 6px;
+            text-align: center;
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+        #session-eta .eta-phase {
+            font-weight: 700;
+        }
+        #session-eta .eta-phase.eta-review { color: var(--count-review, #4cd137); }
+        #session-eta .eta-phase.eta-new { color: var(--count-new, #00a8ff); }
+        #session-eta .eta-phase.eta-learn { color: var(--count-learn, #e84118); }
 
         /* Resumo da sessão (tela final) */
         #session-summary {
@@ -803,6 +817,7 @@
             <div class="stat" id="stat-box-review"><span class="stat-label">Due</span><span id="stat-review" class="stat-val count-review">0</span></div>
         </div>
         <div id="current-deck" class="hidden"></div>
+        <div id="session-eta" class="hidden"></div>
         <div id="session-timer" class="hidden">⏱ <span id="timer-display">00:00</span></div>
     </header>
 
@@ -927,6 +942,7 @@
         const currentDeck = document.getElementById('current-deck');
         const sessionTimer = document.getElementById('session-timer');
         const timerDisplay = document.getElementById('timer-display');
+        const sessionEta = document.getElementById('session-eta');
         const sessionSummary = document.getElementById('session-summary');
         const historyModal = document.getElementById('history-modal');
         const historyList = document.getElementById('history-list');
@@ -1009,6 +1025,7 @@
             statsBar.classList.toggle('hidden', state !== 'card' && state !== 'result');
             currentDeck.classList.toggle('hidden', state !== 'card' && state !== 'result');
             sessionTimer.classList.toggle('hidden', state !== 'card' && state !== 'result');
+            if (state !== 'card' && state !== 'result') sessionEta.classList.add('hidden');
 
             btnRecord.classList.toggle('hidden', state !== 'card');
             btnSkip.classList.toggle('hidden', state !== 'card');
@@ -1145,7 +1162,41 @@
                     currentDeck.textContent = '📚 ' + data.current_deck.replace(/::/g, ' › ');
                     currentDeck.classList.remove('hidden');
                 }
+
+                renderEta(data.eta);
             });
+
+            // Formata segundos como "X h Y min", "X min" ou "menos de 1 min".
+            function formatEta(sec) {
+                if (sec < 60) return 'menos de 1 min';
+                const totalMin = Math.round(sec / 60);
+                if (totalMin < 60) return totalMin + ' min';
+                const h = Math.floor(totalMin / 60);
+                const m = totalMin % 60;
+                return m ? `${h} h ${m} min` : `${h} h`;
+            }
+
+            // Previsão de quanto falta para fechar a fila ativa (Due → New → Learn),
+            // usando o ritmo médio real desta sessão. A fila vem do backend conforme
+            // a prioridade: enquanto há Due mostra o Due; depois New; por fim Learn.
+            const ETA_PHASE = {
+                review: { label: 'Due', cls: 'eta-review' },
+                new: { label: 'New', cls: 'eta-new' },
+                learn: { label: 'Learn', cls: 'eta-learn' },
+            };
+            function renderEta(eta) {
+                if (!eta || !eta.phase || !ETA_PHASE[eta.phase] || eta.remaining <= 0) {
+                    sessionEta.classList.add('hidden');
+                    return;
+                }
+                const info = ETA_PHASE[eta.phase];
+                const cards = eta.remaining === 1 ? 'cartão' : 'cartões';
+                sessionEta.innerHTML =
+                    `⏳ Faltam ~${formatEta(eta.eta_sec)} para fechar ` +
+                    `<span class="eta-phase ${info.cls}">${info.label}</span> ` +
+                    `(${eta.remaining} ${cards})`;
+                sessionEta.classList.remove('hidden');
+            }
 
             socket.on('card_html', (data) => {
                 currentAnswerText = data.answer_text;

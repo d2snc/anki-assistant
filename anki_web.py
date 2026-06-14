@@ -729,6 +729,33 @@ def card_state(card):
     return state
 
 
+def session_eta(new, learn, review):
+    """Estimativa de tempo para fechar a fila ATIVA, seguindo a prioridade
+    Due → New → Learn: enquanto houver Due, estima o tempo para zerar o Due;
+    quando o Due acaba, passa a estimar o New; por fim, o Learn.
+
+    O ritmo é o tempo real médio por flashcard da sessão (tempo decorrido /
+    cards processados). Devolve {phase, remaining, eta_sec} ou None enquanto
+    ainda não há ritmo medido (nenhum card processado) ou nada a fazer."""
+    if session_stats is None:
+        return None
+    processed = session_stats["answered"] + session_stats["skipped"]
+    if processed < 1:
+        return None  # sem ritmo medido ainda
+    avg = (time.time() - session_stats["started_at"]) / processed
+
+    if review > 0:
+        phase, remaining = "review", review
+    elif new > 0:
+        phase, remaining = "new", new
+    elif learn > 0:
+        phase, remaining = "learn", learn
+    else:
+        return None
+
+    return {"phase": phase, "remaining": remaining, "eta_sec": round(avg * remaining)}
+
+
 def emit_stats(card=None):
     """Envia os contadores do deck (new/learn/review) e, quando há um card
     ativo, em qual baralho e fila (new/learn/due) ele está."""
@@ -744,6 +771,9 @@ def emit_stats(card=None):
         deck_id = getattr(card, "odid", 0) or card.did
         payload["current_deck"] = get_collection().decks.name(deck_id)
         payload["current_state"] = card_state(card)
+    eta = session_eta(new, learn, review)
+    if eta is not None:
+        payload["eta"] = eta
     emit("stats", payload)
 
 
