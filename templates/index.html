@@ -278,6 +278,128 @@
             box-shadow: 0 0 16px var(--accent-glow);
         }
 
+        /* Escolha de modo (após selecionar o deck) */
+        .mode-deck {
+            color: var(--text-secondary);
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .mode-prompt {
+            color: var(--text-primary);
+            font-size: 1.1rem;
+            margin-bottom: 20px;
+        }
+        .mode-options {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            max-width: 420px;
+            margin: 0 auto 16px;
+        }
+        .mode-btn {
+            flex-direction: column;
+            gap: 4px;
+            padding: 18px 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+        }
+        .mode-btn:hover:not(:disabled) {
+            background: var(--bg-card-hover);
+            border-color: var(--accent);
+        }
+        .mode-emoji { font-size: 1.6rem; }
+        .mode-label { font-weight: 700; font-size: 1rem; }
+        .mode-desc { font-size: 0.8rem; color: var(--text-muted); }
+
+        /* Modo opções: "Mostrar resposta" e os botões Again/Hard/Good/Easy */
+        #answer-controls {
+            padding: 0 20px 8px;
+            display: flex;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        #btn-show-answer {
+            padding: 16px 32px;
+            background: var(--accent);
+            color: white;
+            width: 100%;
+            max-width: 600px;
+            font-size: 1.05rem;
+        }
+        #btn-show-answer:hover:not(:disabled) {
+            box-shadow: 0 0 16px var(--accent-glow);
+        }
+        #rating-buttons {
+            display: flex;
+            gap: 8px;
+            width: 100%;
+            max-width: 600px;
+        }
+        .rating-btn {
+            flex: 1;
+            flex-direction: column;
+            gap: 4px;
+            padding: 12px 6px;
+            color: white;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+        }
+        .rating-btn:hover:not(:disabled) { filter: brightness(1.12); }
+        .rating-ivl { font-size: 0.75rem; opacity: 0.9; font-weight: 600; }
+        .rating-name {
+            font-size: 0.95rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .rating-name kbd {
+            font-size: 0.7rem;
+            font-family: inherit;
+            background: rgba(0, 0, 0, 0.28);
+            border-radius: 4px;
+            padding: 1px 6px;
+        }
+        .rating-again { background: #ef4444; }
+        .rating-hard { background: #f59e0b; }
+        .rating-good { background: #22c55e; }
+        .rating-easy { background: #3b82f6; }
+
+        /* Ilustração gerada por IA (modo opções) */
+        #illustration-tools {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            max-width: 600px;
+            margin-top: 4px;
+        }
+        #btn-illustrate { width: 100%; }
+        #illustration-preview-area {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+        }
+        #illustration-img {
+            max-width: 100%;
+            max-height: 320px;
+            border-radius: 10px;
+            border: 1px solid var(--border, #333);
+        }
+        #illustration-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: center;
+            width: 100%;
+        }
+        #illustration-actions .btn { flex: 1; min-width: 120px; }
+        .btn-illust-use { background: #22c55e; color: white; }
+        .btn-illust-use:hover:not(:disabled) { filter: brightness(1.12); }
+
         /* Score badge */
         #score-badge {
             display: none;
@@ -834,6 +956,25 @@
             <h2>Anki Voice</h2>
             <p id="start-subtitle">Carregando seus decks...</p>
             <div id="decks-container" class="decks-list hidden"></div>
+
+            <!-- Escolha de modo (aparece após selecionar um deck) -->
+            <div id="mode-screen" class="hidden">
+                <p id="mode-deck-name" class="mode-deck"></p>
+                <p class="mode-prompt">Como você quer responder?</p>
+                <div class="mode-options">
+                    <button class="btn mode-btn" onclick="startSession(selectedDeckId, 'voice')">
+                        <span class="mode-emoji">🎙️</span>
+                        <span class="mode-label">Responder por voz</span>
+                        <span class="mode-desc">Fale a resposta; a IA avalia</span>
+                    </button>
+                    <button class="btn mode-btn" onclick="startSession(selectedDeckId, 'buttons')">
+                        <span class="mode-emoji">⌨️</span>
+                        <span class="mode-label">Responder por opções</span>
+                        <span class="mode-desc">Again · Hard · Good · Easy (atalhos 1–4)</span>
+                    </button>
+                </div>
+                <button class="btn btn-secondary" onclick="backToDecks()">← Voltar aos decks</button>
+            </div>
         </div>
 
         <!-- Card content (hidden initially) -->
@@ -891,6 +1032,46 @@
         <div id="transcription-text"></div>
     </div>
 
+    <!-- Modo opções: "Mostrar resposta" e os botões de avaliação (estilo Anki) -->
+    <div id="answer-controls" class="hidden">
+        <button id="btn-show-answer" class="btn hidden" onclick="showAnswerButtons()">
+            Mostrar resposta
+        </button>
+        <div id="rating-buttons" class="hidden">
+            <button class="btn rating-btn rating-again" onclick="rateCard(1)">
+                <span class="rating-ivl"></span>
+                <span class="rating-name">Again <kbd>1</kbd></span>
+            </button>
+            <button class="btn rating-btn rating-hard" onclick="rateCard(2)">
+                <span class="rating-ivl"></span>
+                <span class="rating-name">Hard <kbd>2</kbd></span>
+            </button>
+            <button class="btn rating-btn rating-good" onclick="rateCard(3)">
+                <span class="rating-ivl"></span>
+                <span class="rating-name">Good <kbd>3</kbd></span>
+            </button>
+            <button class="btn rating-btn rating-easy" onclick="rateCard(4)">
+                <span class="rating-ivl"></span>
+                <span class="rating-name">Easy <kbd>4</kbd></span>
+            </button>
+        </div>
+
+        <!-- Gerar imagem ilustrativa (Nano Banana) e anexá-la ao card -->
+        <div id="illustration-tools" class="hidden">
+            <button id="btn-illustrate" class="btn btn-secondary" onclick="generateIllustration()">
+                🎨 Gerar imagem para ilustrar
+            </button>
+            <div id="illustration-preview-area" class="hidden">
+                <img id="illustration-img" alt="Ilustração gerada">
+                <div id="illustration-actions">
+                    <button class="btn btn-illust-use" onclick="approveIllustration()">✓ Usar imagem</button>
+                    <button class="btn btn-secondary" onclick="generateIllustration()">🔄 Gerar outra</button>
+                    <button class="btn btn-secondary" onclick="discardIllustration()">✗ Descartar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="controls">
         <button id="btn-skip" class="btn btn-secondary hidden" onclick="skipCard()">
             ⏭ Pular
@@ -912,7 +1093,15 @@
         let mediaRecorder;
         let audioChunks = [];
         let isRecording = false;
+        let discardAudio = false; // quando true, a gravação é descartada sem enviar (ex: marcou "Ruim" falando)
         let currentAnswerText = '';
+
+        // ---- Modo de resposta ----
+        let currentMode = 'voice';   // 'voice' (fala + IA) ou 'buttons' (Again/Hard/Good/Easy)
+        let selectedDeckId = null;   // deck escolhido, aguardando a escolha do modo
+        let cardPhase = 'question';  // modo opções: 'question' → 'answer' → 'rating'
+        let buttonsAnswerHtml = '';  // HTML da resposta, revelado no "Mostrar resposta"
+        let buttonsLabels = [];      // rótulos de intervalo [again, hard, good, easy]
         let audioQueue = [];
         let isPlayingAudio = false;
         let globalAudio = new Audio();
@@ -922,7 +1111,14 @@
         let globalStream = null;
         let globalAnalyser = null;
         let recordingTimer = null;
-        const RECORDING_DURATION_MS = 8000; // 8 segundos de gravação padrão
+        let vadInterval = null;            // monitor de volume durante a gravação
+        let lastSpeechMs = 0;              // instante da última fala detectada
+        let recordingStartMs = 0;          // início da gravação atual
+        const RECORDING_DURATION_MS = 8000;        // 8 segundos de gravação padrão
+        const RECORDING_EXTENSION_MS = 4000;       // se ainda estiver falando, estende +4s
+        const MAX_RECORDING_DURATION_MS = 20000;   // teto de gravação (8s + extensões)
+        const SPEECH_RMS_THRESHOLD = 8;            // volume (RMS 0–255) acima disso = falando
+        const SILENCE_HANGOVER_MS = 800;           // silêncio por mais que isso = parou de falar
 
         // ---- DOM refs ----
         const startScreen = document.getElementById('start-screen');
@@ -935,6 +1131,14 @@
         const btnSkip = document.getElementById('btn-skip');
         const btnBad = document.getElementById('btn-bad');
         const btnNext = document.getElementById('btn-next');
+        const answerControls = document.getElementById('answer-controls');
+        const btnShowAnswer = document.getElementById('btn-show-answer');
+        const ratingButtons = document.getElementById('rating-buttons');
+        const ratingBtns = Array.from(document.querySelectorAll('.rating-btn')); // ordem: again, hard, good, easy
+        const illustrationTools = document.getElementById('illustration-tools');
+        const illustrationPreviewArea = document.getElementById('illustration-preview-area');
+        const illustrationImg = document.getElementById('illustration-img');
+        const btnIllustrate = document.getElementById('btn-illustrate');
         const sessionEnd = document.getElementById('session-end');
         const sessionEndMsg = document.getElementById('session-end-msg');
         const flashOverlay = document.getElementById('flash-overlay');
@@ -1027,15 +1231,99 @@
             sessionTimer.classList.toggle('hidden', state !== 'card' && state !== 'result');
             if (state !== 'card' && state !== 'result') sessionEta.classList.add('hidden');
 
-            btnRecord.classList.toggle('hidden', state !== 'card');
+            const buttonsMode = currentMode === 'buttons';
+
+            // Modo voz: microfone (durante o card) e "Próximo" (no resultado).
+            btnRecord.classList.toggle('hidden', buttonsMode || state !== 'card');
+            btnNext.classList.toggle('hidden', buttonsMode || state !== 'result');
+
+            // Modo opções: a área "Mostrar resposta"/notas só durante o card; a
+            // alternância entre mostrar-resposta e as notas é feita por setCardPhase.
+            answerControls.classList.toggle('hidden', !buttonsMode || state !== 'card');
+            if (!buttonsMode || state !== 'card') {
+                btnShowAnswer.classList.add('hidden');
+                ratingButtons.classList.add('hidden');
+            }
+
+            // Skip e Bad: disponíveis enquanto há um card na tela (ambos os modos).
             btnSkip.classList.toggle('hidden', state !== 'card');
             btnBad.classList.toggle('hidden', state !== 'card');
-            btnNext.classList.toggle('hidden', state !== 'result');
 
             if (state === 'card') {
                 scoreBadge.style.display = 'none';
                 transcriptionText.textContent = '';
             }
+        }
+
+        // ---- Modo opções: fases do card (pergunta → resposta) ----
+        function setCardPhase(phase) {
+            cardPhase = phase;
+            if (phase === 'question') {
+                btnShowAnswer.classList.remove('hidden');
+                btnShowAnswer.disabled = false;
+                ratingButtons.classList.add('hidden');
+                illustrationTools.classList.add('hidden');
+                illustrationPreviewArea.classList.add('hidden');
+                btnSkip.disabled = false;
+                btnBad.disabled = false;
+                setStatus('Pressione <b>Enter</b> ou toque em <b>Mostrar resposta</b>');
+            } else if (phase === 'answer') {
+                btnShowAnswer.classList.add('hidden');
+                ratingBtns.forEach((btn, i) => {
+                    const ivl = btn.querySelector('.rating-ivl');
+                    if (ivl) ivl.textContent = buttonsLabels[i] || '';
+                    btn.disabled = false;
+                });
+                ratingButtons.classList.remove('hidden');
+                // Ferramentas de ilustração: disponíveis só após revelar a resposta.
+                illustrationPreviewArea.classList.add('hidden');
+                illustrationTools.classList.remove('hidden');
+                btnIllustrate.disabled = false;
+                btnIllustrate.textContent = '🎨 Gerar imagem para ilustrar';
+                btnSkip.disabled = false;
+                btnBad.disabled = false;
+                setStatus('Como foi? <b>1</b> Again · <b>2</b> Hard · <b>3</b> Good · <b>4</b> Easy');
+            }
+        }
+
+        function showAnswerButtons() {
+            if (currentMode !== 'buttons' || cardPhase !== 'question') return;
+            cardContent.innerHTML = buttonsAnswerHtml;
+            if (typeof renderMathInElement === 'function') {
+                renderMathInElement(cardContent);
+            }
+            setCardPhase('answer');
+        }
+
+        function rateCard(ease) {
+            if (currentMode !== 'buttons' || cardPhase !== 'answer') return;
+            if (![1, 2, 3, 4].includes(ease)) return;
+            cardPhase = 'rating';  // trava contra duplo-clique/atalho repetido
+            ratingBtns.forEach(b => b.disabled = true);
+            btnSkip.disabled = true;
+            btnBad.disabled = true;
+            socket.emit('answer_button', { ease });
+            setStatus('Carregando próximo card...');
+        }
+
+        // ---- Ilustração por IA (modo opções) ----
+        function generateIllustration() {
+            if (currentMode !== 'buttons') return;
+            btnIllustrate.disabled = true;
+            illustrationPreviewArea.classList.add('hidden');
+            setStatus('<span class="spinner"></span> Gerando ilustração...');
+            socket.emit('generate_illustration');
+        }
+
+        function approveIllustration() {
+            socket.emit('approve_illustration');
+            setStatus('<span class="spinner"></span> Salvando imagem no card...');
+        }
+
+        function discardIllustration() {
+            socket.emit('discard_illustration');
+            illustrationPreviewArea.classList.add('hidden');
+            btnIllustrate.disabled = false;
         }
 
         function setStatus(msg) {
@@ -1073,9 +1361,32 @@
                         <span class="${deck.review > 0 ? 'count-review' : 'count-zero'}">${deck.review}</span>
                     </div>
                 `;
-                item.onclick = () => startSession(deck.id);
+                item.onclick = () => chooseDeck(deck.id, deck.name);
                 container.appendChild(item);
             });
+        }
+
+        // ---- Escolha de modo (após selecionar o deck) ----
+        const modeScreen = document.getElementById('mode-screen');
+        const topActions = document.querySelector('.top-actions');
+        const startSubtitle = document.getElementById('start-subtitle');
+        const decksContainer = document.getElementById('decks-container');
+
+        function chooseDeck(deckId, deckName) {
+            selectedDeckId = deckId;
+            document.getElementById('mode-deck-name').textContent =
+                '📚 ' + deckName.replace(/::/g, ' › ');
+            decksContainer.classList.add('hidden');
+            startSubtitle.classList.add('hidden');
+            topActions.classList.add('hidden');
+            modeScreen.classList.remove('hidden');
+        }
+
+        function backToDecks() {
+            modeScreen.classList.add('hidden');
+            decksContainer.classList.remove('hidden');
+            startSubtitle.classList.remove('hidden');
+            topActions.classList.remove('hidden');
         }
 
         async function syncAnki() {
@@ -1100,34 +1411,41 @@
         }
 
         // ---- Socket.IO ----
-        async function startSession(deckId) {
-            // "Destrava" os elementos de áudio no primeiro toque do usuário
-            globalAudio.play().catch(() => {});
-            beepAudio.play().catch(() => {});
-            
-            // Destrava o contexto de áudio avançado e pega a permissão do microfone de forma global!
-            setStatus('Iniciando microfone...');
-            if (!window.globalAudioContext) {
-                window.globalAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            if (window.globalAudioContext.state === 'suspended') {
-                window.globalAudioContext.resume();
-            }
-            
-            try {
-                if (!globalStream) {
-                    globalStream = await navigator.mediaDevices.getUserMedia({
-                        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
-                    });
-                    const source = window.globalAudioContext.createMediaStreamSource(globalStream);
-                    globalAnalyser = window.globalAudioContext.createAnalyser();
-                    globalAnalyser.fftSize = 512;
-                    source.connect(globalAnalyser);
+        async function startSession(deckId, mode) {
+            currentMode = mode === 'buttons' ? 'buttons' : 'voice';
+            cardPhase = 'question';
+
+            // O modo voz precisa de microfone e do "destrave" de áudio (TTS); o
+            // modo opções é silencioso, então pula essa parte.
+            if (currentMode === 'voice') {
+                // "Destrava" os elementos de áudio no primeiro toque do usuário
+                globalAudio.play().catch(() => {});
+                beepAudio.play().catch(() => {});
+
+                // Destrava o contexto de áudio avançado e pega a permissão do microfone de forma global!
+                setStatus('Iniciando microfone...');
+                if (!window.globalAudioContext) {
+                    window.globalAudioContext = new (window.AudioContext || window.webkitAudioContext)();
                 }
-            } catch(e) {
-                console.error("Microfone error:", e);
-                setStatus('⚠️ Erro: Microfone não autorizado');
-                return;
+                if (window.globalAudioContext.state === 'suspended') {
+                    window.globalAudioContext.resume();
+                }
+
+                try {
+                    if (!globalStream) {
+                        globalStream = await navigator.mediaDevices.getUserMedia({
+                            audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
+                        });
+                        const source = window.globalAudioContext.createMediaStreamSource(globalStream);
+                        globalAnalyser = window.globalAudioContext.createAnalyser();
+                        globalAnalyser.fftSize = 512;
+                        source.connect(globalAnalyser);
+                    }
+                } catch(e) {
+                    console.error("Microfone error:", e);
+                    setStatus('⚠️ Erro: Microfone não autorizado');
+                    return;
+                }
             }
 
             showState('card');
@@ -1138,7 +1456,7 @@
 
             socket.on('connect', () => {
                 setStatus('Carregando cards...');
-                socket.emit('start_session', { deck_id: deckId });
+                socket.emit('start_session', { deck_id: deckId, mode: currentMode });
             });
 
             socket.on('stats', (data) => {
@@ -1199,17 +1517,27 @@
             }
 
             socket.on('card_html', (data) => {
-                currentAnswerText = data.answer_text;
                 cardContent.innerHTML = data.html;
                 // Render KaTeX if available
                 if (typeof renderMathInElement === 'function') {
                     renderMathInElement(cardContent);
                 }
-                showState('card');
-                btnRecord.disabled = true;
-                btnSkip.disabled = false;
-                btnBad.disabled = false;
-                setStatus('Ouvindo pergunta <span class="listening-dots"><span></span><span></span><span></span></span>');
+
+                if (data.mode === 'buttons') {
+                    // Modo opções: guarda a resposta e os rótulos de intervalo;
+                    // mostra a pergunta com o botão "Mostrar resposta".
+                    buttonsAnswerHtml = data.answer_html || '';
+                    buttonsLabels = data.buttons || [];
+                    showState('card');
+                    setCardPhase('question');
+                } else {
+                    currentAnswerText = data.answer_text;
+                    showState('card');
+                    btnRecord.disabled = true;
+                    btnSkip.disabled = false;
+                    btnBad.disabled = false;
+                    setStatus('Ouvindo pergunta <span class="listening-dots"><span></span><span></span><span></span></span>');
+                }
             });
 
             socket.on('question_tts', (data) => {
@@ -1258,6 +1586,35 @@
                     // Passa automaticamente para a próxima pergunta após o áudio terminar
                     socket.emit('next_card');
                 });
+            });
+
+            // ---- Ilustração por IA (modo opções) ----
+            socket.on('illustration_status', (data) => {
+                setStatus('<span class="spinner"></span> ' + data.message);
+            });
+
+            socket.on('illustration_error', (data) => {
+                setStatus('⚠️ ' + data.message);
+                btnIllustrate.disabled = false;
+            });
+
+            socket.on('illustration_preview', (data) => {
+                illustrationImg.src = data.image;
+                illustrationPreviewArea.classList.remove('hidden');
+                btnIllustrate.disabled = false;
+                setStatus('Gostou? <b>Usar imagem</b> a adiciona ao verso do card.');
+            });
+
+            socket.on('illustration_saved', (data) => {
+                illustrationPreviewArea.classList.add('hidden');
+                btnIllustrate.textContent = '✓ Imagem adicionada';
+                btnIllustrate.disabled = true;
+                // Mostra a imagem no card atual também (já fica ilustrado agora).
+                const img = document.createElement('img');
+                img.src = data.src;
+                img.style.maxWidth = '100%';
+                cardContent.appendChild(img);
+                setStatus('Imagem adicionada! Como foi? <b>1</b> Again · <b>2</b> Hard · <b>3</b> Good · <b>4</b> Easy');
             });
 
             socket.on('session_end', (data) => {
@@ -1322,6 +1679,12 @@
                 mediaRecorder.onstop = () => {
                     stopRecordingTimer();
                     // Não encerramos as trilhas do globalStream aqui, mantemos aberto!
+                    // Se o usuário marcou "Ruim" enquanto falava, descarta o áudio:
+                    // o card já foi suspenso, não há resposta para avaliar.
+                    if (discardAudio) {
+                        discardAudio = false;
+                        return;
+                    }
                     sendAudio();
                 };
 
@@ -1332,7 +1695,9 @@
                 btnRecord.textContent = '⏹';
                 btnRecord.disabled = false;
                 btnSkip.disabled = true;
-                btnBad.disabled = true;
+                // "Ruim" continua ativo durante a fala: dá pra marcar o card como
+                // ruim a qualquer momento, mesmo no meio da resposta.
+                btnBad.disabled = false;
                 setStatus('Gravando... fale sua resposta');
 
                 // Inicia timer de gravação de 8 segundos
@@ -1356,24 +1721,61 @@
             setStatus('<span class="spinner"></span> Enviando áudio...');
         }
 
-        // ---- Recording Timer ----
+        // ---- Recording Timer (com detecção de fala / VAD) ----
+        // Grava 8s por padrão. Perto do fim, se o usuário ainda estiver falando,
+        // estende a gravação em blocos de 4s (até um teto) para não cortar a resposta.
         function startRecordingTimer() {
-            if (recordingTimer) {
-                clearTimeout(recordingTimer);
-            }
+            stopRecordingTimer();
+            recordingStartMs = Date.now();
+            lastSpeechMs = recordingStartMs; // assume que a resposta começou junto com a gravação
             setStatus('🔴 Gravando... (8s)');
-            recordingTimer = setTimeout(() => {
-                if (isRecording) {
-                    setStatus('Tempo esgotado, finalizando gravação...');
-                    stopRecording();
+
+            // Monitor de volume: a cada 100ms mede o RMS do microfone e registra
+            // o instante da última fala detectada (usado no check perto do fim dos 8s).
+            const vadData = globalAnalyser ? new Uint8Array(globalAnalyser.fftSize) : null;
+            vadInterval = setInterval(() => {
+                if (!isRecording || !globalAnalyser || !vadData) return;
+                globalAnalyser.getByteTimeDomainData(vadData);
+                let sumSq = 0;
+                for (let i = 0; i < vadData.length; i++) {
+                    const d = vadData[i] - 128;
+                    sumSq += d * d;
                 }
-            }, RECORDING_DURATION_MS);
+                const rms = Math.sqrt(sumSq / vadData.length);
+                if (rms >= SPEECH_RMS_THRESHOLD) lastSpeechMs = Date.now();
+            }, 100);
+
+            // Primeira verificação ao fim dos 8s.
+            recordingTimer = setTimeout(checkRecordingDeadline, RECORDING_DURATION_MS);
+        }
+
+        // Chamado ao fim dos 8s (e ao fim de cada extensão): decide se finaliza ou
+        // estende a gravação caso o usuário ainda esteja falando.
+        function checkRecordingDeadline() {
+            if (!isRecording) return;
+            const now = Date.now();
+            const elapsed = now - recordingStartMs;
+            const stillTalking = (now - lastSpeechMs) < SILENCE_HANGOVER_MS;
+
+            if (stillTalking && elapsed < MAX_RECORDING_DURATION_MS) {
+                // Ainda falando perto do fim: estende mais um pouco pra não cortar a resposta.
+                const ext = Math.min(RECORDING_EXTENSION_MS, MAX_RECORDING_DURATION_MS - elapsed);
+                setStatus(`🔴 Gravando... (+${Math.round(ext / 1000)}s)`);
+                recordingTimer = setTimeout(checkRecordingDeadline, ext);
+            } else {
+                setStatus('Tempo esgotado, finalizando gravação...');
+                stopRecording();
+            }
         }
 
         function stopRecordingTimer() {
             if (recordingTimer) {
                 clearTimeout(recordingTimer);
                 recordingTimer = null;
+            }
+            if (vadInterval) {
+                clearInterval(vadInterval);
+                vadInterval = null;
             }
         }
 
@@ -1406,11 +1808,40 @@
         }
 
         function flagBadCard() {
+            // Pode ser acionado durante a gravação (enquanto o usuário fala): nesse
+            // caso, cancela a gravação sem enviar o áudio para avaliação.
+            if (isRecording) {
+                discardAudio = true;
+                stopRecording();
+            }
             btnBad.disabled = true;
             btnSkip.disabled = true;
+            btnRecord.disabled = true;
             socket.emit('flag_bad_card');
             setStatus('🚩 Marcado como ruim. Vai pra galeria.');
         }
+
+        // ---- Atalhos de teclado (modo opções, como no Anki) ----
+        // Enter/Espaço revela a resposta; 1/2/3/4 = Again/Hard/Good/Easy. Com a
+        // resposta visível, Enter/Espaço também valem "Good", como no Anki.
+        document.addEventListener('keydown', (e) => {
+            if (currentMode !== 'buttons') return;
+            if (cardWrapper.classList.contains('hidden')) return; // só durante um card
+            if (cardPhase === 'question') {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    showAnswerButtons();
+                }
+            } else if (cardPhase === 'answer') {
+                if (['1', '2', '3', '4'].includes(e.key)) {
+                    e.preventDefault();
+                    rateCard(parseInt(e.key, 10));
+                } else if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    rateCard(3); // Good
+                }
+            }
+        });
 
         // ---- Session summary (tela final) ----
         function renderSessionSummary(summary) {

@@ -41,6 +41,7 @@ from anki_ai import (
     strip_images_from_text,
     get_prioritized_card,
     review_flashcard,
+    generate_illustration,
     tts_to_bytes,
     SAMPLE_RATE,
 )
@@ -60,6 +61,13 @@ current_card = None
 current_card_english = False  # True quando o card atual está em inglês
 current_question = None  # texto renderizado da pergunta do card atual (para avaliação)
 session_stats = None  # métricas da sessão de estudo em andamento (None = sem sessão)
+# Modo de resposta da sessão: "voice" (fala + avaliação por IA, só cards Basic) ou
+# "buttons" (auto-avaliação Again/Hard/Good/Easy como no Anki, qualquer note type).
+session_mode = "voice"
+
+# Ilustração gerada (modo opções) aguardando aprovação. Guardada entre o preview
+# e o "Usar imagem" para não regenerar ao aprovar. {"note_id": int, "png": bytes}.
+pending_illustration = None
 
 # Histórico de sessões: uma lista JSON em disco, append-only. Fica fora do git
 # (uso pessoal) e mora ao lado deste arquivo para não depender do CWD.
@@ -244,6 +252,13 @@ def answer_only_html(answer_html):
     return parts[1] if len(parts) > 1 else answer_html
 
 
+def _media_rewritten(html):
+    """Reescreve referências de mídia (src="arquivo") para a rota /media/ do
+    servidor, sem duplicar o prefixo caso o caminho já o tenha."""
+    html = re.sub(r'src="(?!http)', 'src="/media/', html)
+    return html.replace('src="/media//media/', 'src="/media/')
+
+
 # Filas do Anki (campo queue do card): 0=new, 1=learning intradiário, 2=review
 # (Due), 3=day-learn. Só a 1 (learning intradiário) trava no topo da fila.
 QUEUE_LEARN_INTRADAY = 1
@@ -278,14 +293,19 @@ def _pick_next_card(col):
     return get_prioritized_card(col)
 
 
-def advance_card():
+def advance_card(skip_non_basic=True):
     """Avança para o próximo card estudável. Retorna (card, question, answer_text) ou None.
 
     A escolha (prioridade Due → New → Learn) fica em _pick_next_card. Aqui só
-    tratamos o que ele devolve: cards fora do escopo da sessão de voz (não-Basic)
-    ou que não renderizam são enterrados (bury) para a fila avançar — bury não
-    altera intervalo/ease e o Anki desenterra sozinho no dia seguinte. Resposta
-    ERRADA nunca passa por aqui — ela vai pra learn via Again no fluxo natural.
+    tratamos o que ele devolve: cards que não renderizam são enterrados (bury)
+    para a fila avançar — bury não altera intervalo/ease e o Anki desenterra
+    sozinho no dia seguinte. Resposta ERRADA nunca passa por aqui — ela vai pra
+    learn via Again no fluxo natural.
+
+    skip_non_basic=True (modo voz): cards não-Basic são enterrados, pois a
+    avaliação por IA precisa de pergunta/resposta em texto. No modo opções
+    (skip_non_basic=False) o usuário se auto-avalia, então qualquer note type
+    (Cloze etc.) é exibido — como no próprio Anki.
     """
     global current_card
     col = get_collection()
@@ -296,10 +316,11 @@ def advance_card():
             current_card = None
             return None
 
-        # _pick_next_card devolve o 1º não-learning (Basic ou não). Se for não-Basic,
-        # enterra para destravar — nunca pulamos para um Basic mais fundo (daria
-        # 'not at top of queue'). É o único ponto que altera a fila aqui.
-        if not is_basic_note(card):
+        # _pick_next_card devolve o 1º não-learning (Basic ou não). No modo voz,
+        # se for não-Basic, enterra para destravar — nunca pulamos para um Basic
+        # mais fundo (daria 'not at top of queue'). É o único ponto que altera a
+        # fila aqui (além do bury de card quebrado).
+        if skip_non_basic and not is_basic_note(card):
             col.sched.bury_cards([card.id])
             continue
 
@@ -322,6 +343,14 @@ def advance_card():
 
         current_card = card
         return card, question, answer_text
+
+
+def next_button_labels(col, card):
+    """Rótulos de intervalo dos 4 botões (Again/Hard/Good/Easy) tal como o Anki
+    mostra (ex.: '1 min', '10 min', '4 d'), respeitando a configuração do deck.
+    describe_next_states devolve sempre 4 strings na ordem again/hard/good/easy."""
+    states = col._backend.get_scheduling_states(card.id)
+    return list(col.sched.describe_next_states(states))
 
 
 @app.route("/")
@@ -700,9 +729,14 @@ def handle_connect():
 
 @socketio.on("start_session")
 def handle_start_session(data):
-    """Inicia sessão de estudo focada no deck selecionado."""
+    """Inicia sessão de estudo focada no deck selecionado.
+
+    data['mode']: 'voice' (padrão — resposta falada avaliada por IA) ou 'buttons'
+    (auto-avaliação Again/Hard/Good/Easy, como no Anki)."""
+    global session_mode
     finalize_session()  # grava sessão anterior não finalizada, se houver
     deck_id = data.get("deck_id")
+    session_mode = "buttons" if data.get("mode") == "buttons" else "voice"
     col = get_collection()
     deck_name = "Todos os decks"
     if deck_id:
@@ -778,9 +812,15 @@ def emit_stats(card=None):
 
 
 def send_next_card():
-    """Envia o próximo card para o cliente."""
-    global current_card_english, current_question
-    result = advance_card()
+    """Envia o próximo card para o cliente, conforme o modo da sessão.
+
+    A prioridade Due → New → Learn é a mesma nos dois modos (vem de
+    advance_card). Modo 'voice' (padrão): só cards Basic, com TTS da pergunta.
+    Modo 'buttons': qualquer note type, sem TTS — o usuário se auto-avalia com
+    Again/Hard/Good/Easy, como no Anki."""
+    global current_question
+    buttons_mode = session_mode == "buttons"
+    result = advance_card(skip_non_basic=not buttons_mode)
     if result is None:
         summary = finalize_session()
         payload = {"message": "Parabéns! Você terminou todos os cards de hoje!"}
@@ -793,19 +833,22 @@ def send_next_card():
     card.timer_started = time.time()
     current_question = question
 
+    emit_stats(card)
+    if buttons_mode:
+        send_card_buttons(card)
+    else:
+        send_card_voice(card, question, answer_text)
+
+
+def send_card_voice(card, question, answer_text):
+    """Modo voz: envia a pergunta (HTML + texto) e o TTS para o cliente gravar a
+    resposta, que será transcrita e avaliada pela IA."""
+    global current_card_english
     current_card_english = is_english(question, answer_text)
     voice = TTS_VOICE_EN if current_card_english else None
 
-    # HTML do card com URLs de imagens apontando para /media/
-    card_html = card.render_output(browser=True).question_and_style()
-    # Reescreve referências de mídia para usar a rota /media/
-    card_html = re.sub(r'src="(?!http)', 'src="/media/', card_html)
-    # Corrige duplicação se já tiver caminho
-    card_html = card_html.replace('src="/media//media/', 'src="/media/')
-
-    emit_stats(card)
     emit("card_html", {
-        "html": card_html,
+        "html": _media_rewritten(card.render_output(browser=True).question_and_style()),
         "question_text": question,
         "answer_text": answer_text,
     })
@@ -816,6 +859,19 @@ def send_next_card():
     if not speakable:
         speakable = "Verifique a tela."
     send_tts(speakable, "question_tts", voice=voice)
+
+
+def send_card_buttons(card):
+    """Modo opções: envia pergunta e resposta já renderizadas e os rótulos de
+    intervalo dos botões Again/Hard/Good/Easy. O cliente revela a resposta no
+    'Mostrar resposta' e responde via evento answer_button. Sem TTS."""
+    out = card.render_output(browser=True)
+    emit("card_html", {
+        "mode": "buttons",
+        "html": _media_rewritten(out.question_and_style()),
+        "answer_html": _media_rewritten(out.answer_and_style()),
+        "buttons": next_button_labels(get_collection(), card),
+    })
 
 
 @socketio.on("audio_answer")
@@ -915,9 +971,7 @@ def handle_audio_answer(data):
             tts_text = f"Você errou. {feedback} A resposta correta é: {answer_spoken}" if feedback else f"Você errou. A resposta correta é: {answer_spoken}"
 
     # Mostra a resposta na tela (com imagem) tanto no acerto quanto no erro.
-    answer_html = card.render_output(browser=True).answer_and_style()
-    answer_html = re.sub(r'src="(?!http)', 'src="/media/', answer_html)
-    answer_html = answer_html.replace('src="/media//media/', 'src="/media/')
+    answer_html = _media_rewritten(card.render_output(browser=True).answer_and_style())
     emit("show_answer", {"html": answer_html})
 
     # Atualiza o painel imediatamente após responder: o card.load() feito por
@@ -927,6 +981,130 @@ def handle_audio_answer(data):
 
     voice = TTS_VOICE_EN if current_card_english else None
     send_tts(tts_text, "feedback_tts", voice=voice)
+
+
+@socketio.on("answer_button")
+def handle_answer_button(data):
+    """Modo opções: o usuário se auto-avalia clicando Again/Hard/Good/Easy
+    (ease 1–4), como no Anki. Responde o card com esse ease e avança. A
+    prioridade Due → New → Learn é preservada — o próximo card sai de
+    send_next_card → advance_card, igual ao modo voz."""
+    global current_card
+    if current_card is None:
+        emit("error", {"message": "Nenhum card ativo"})
+        return
+    try:
+        ease = int(data.get("ease", 0))
+    except (TypeError, ValueError):
+        ease = 0
+    if ease not in (1, 2, 3, 4):
+        emit("error", {"message": "Avaliação inválida"})
+        return
+
+    card = current_card
+    col = get_collection()
+    try:
+        # ease 1/2/3/4 mapeia exatamente para Again/Hard/Good/Easy no scheduler v3.
+        col.sched.answerCard(card, ease)
+    except Exception as e:
+        log.error(f"Erro ao responder card (modo opções): {e}")
+        current_card = None
+        send_next_card()
+        return
+
+    # Card consumido: zera o estado antes de avançar (evita respostas duplicadas).
+    current_card = None
+    # Como no Anki, só "Again" (1) é lapso; Hard/Good/Easy contam como acerto.
+    record_answer(passed=ease != 1, score=ease)
+    emit_stats(card)
+    send_next_card()
+
+
+# Campos cujo nome indica o "verso" do card — é onde a ilustração entra para
+# aparecer ao revelar a resposta (Back do Basic, Back Extra/Extra do Cloze).
+_ANSWER_FIELD_NAMES = ("back extra", "extra", "back", "verso", "resposta", "answer")
+
+
+def _answer_field_index(note):
+    """Índice do campo onde adicionar a ilustração (o 'verso'). Procura por um
+    nome conhecido; se não achar, usa o último campo (que costuma ser o verso)."""
+    names = [f["name"].strip().lower() for f in note.note_type()["flds"]]
+    for target in _ANSWER_FIELD_NAMES:
+        if target in names:
+            return names.index(target)
+    return len(names) - 1
+
+
+@socketio.on("generate_illustration")
+def handle_generate_illustration():
+    """Modo opções: gera uma ilustração didática para o card atual (Nano Banana
+    via OpenRouter), passando o livro/assunto (nome do deck) como contexto, e
+    envia um preview para o usuário aprovar. A imagem só é gravada no card no
+    'approve_illustration'."""
+    global pending_illustration
+    card = current_card
+    if card is None:
+        emit("illustration_error", {"message": "Nenhum card ativo"})
+        return
+
+    col = get_collection()
+    note = card.note()
+    deck_id = getattr(card, "odid", 0) or card.did
+    book = col.decks.name(deck_id).replace("::", " / ")
+    question = current_question or ""
+    answer = html2text(strip_images_from_text(answer_only_html(card.answer()))).strip()
+
+    emit("illustration_status", {"message": "Gerando ilustração..."})
+    eventlet.sleep(0)
+    png = tpool.execute(lambda: generate_illustration(question, answer, book=book))
+    if not png:
+        emit("illustration_error", {"message": "Não foi possível gerar a imagem."})
+        return
+
+    pending_illustration = {"note_id": note.id, "png": png}
+    emit("illustration_preview", {
+        "image": "data:image/png;base64," + base64.b64encode(png).decode(),
+    })
+
+
+@socketio.on("approve_illustration")
+def handle_approve_illustration():
+    """Modo opções: grava a ilustração aprovada na mídia do Anki e a anexa ao
+    verso da nota, para o card já aparecer ilustrado nas próximas revisões."""
+    global pending_illustration
+    if not pending_illustration:
+        emit("illustration_error", {"message": "Nenhuma imagem para aprovar."})
+        return
+
+    col = get_collection()
+    try:
+        note = col.get_note(pending_illustration["note_id"])
+    except Exception:
+        pending_illustration = None
+        emit("illustration_error", {"message": "Nota não encontrada."})
+        return
+
+    try:
+        fname = col.media.write_data("ilustracao.png", pending_illustration["png"])
+        idx = _answer_field_index(note)
+        sep = "<br>" if note.fields[idx].strip() else ""
+        note.fields[idx] += f'{sep}<img src="{fname}">'
+        col.update_note(note)
+    except Exception as e:
+        log.error(f"Erro ao salvar ilustração: {e}")
+        emit("illustration_error", {"message": "Erro ao salvar a imagem no card."})
+        return
+    finally:
+        pending_illustration = None
+
+    emit("illustration_saved", {"src": "/media/" + fname})
+
+
+@socketio.on("discard_illustration")
+def handle_discard_illustration():
+    """Descarta a ilustração em preview sem gravá-la no card."""
+    global pending_illustration
+    pending_illustration = None
 
 
 @socketio.on("skip_card")

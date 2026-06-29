@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import time
 import threading
 import logging
@@ -10,6 +11,7 @@ import unicodedata
 from difflib import SequenceMatcher
 
 import numpy as np
+import requests
 from anki.collection import Collection
 from anki.cards import Card
 from html2text import html2text
@@ -42,6 +44,21 @@ openai_tts_client = None
 if os.getenv("OPENAI_API_KEY"):
     openai_tts_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
+# Transcrição (speech-to-text) via OpenRouter. O endpoint /audio/transcriptions
+# do OpenRouter NÃO é compatível com o SDK da OpenAI (espera JSON com o áudio em
+# base64, não multipart) e aceita só a dica de `language` — sem o prompt de
+# vocabulário marítimo. Por isso é uma chamada HTTP direta. Sem OPENROUTER_API_KEY,
+# cai no Whisper do cliente principal (Groq/OpenAI), que ainda usa esse prompt.
+OPENROUTER_TRANSCRIBE_MODEL = "openai/gpt-4o-mini-transcribe"
+OPENROUTER_TRANSCRIBE_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
+
+# Geração de imagem (Nano Banana) via OpenRouter para ilustrar flashcards. O
+# modelo de imagem responde pelo endpoint de chat: pede-se modalities com
+# "image" e a imagem volta como data URL base64 em
+# choices[0].message.images[0].image_url.url.
+OPENROUTER_IMAGE_MODEL = "google/gemini-2.5-flash-image"
+OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+
 # Cliente OpenRouter (modelos grátis) usado pelo revisor de flashcards em
 # background. OpenRouter é compatível com a API da OpenAI — basta trocar a
 # base_url. Se a chave não estiver no .env, o revisor cai no Groq/OpenAI.
@@ -61,6 +78,14 @@ OPENROUTER_REVIEW_MODELS = [
     "nex-agi/nex-n2-pro:free",
     "openai/gpt-oss-20b:free",
     "nvidia/nemotron-3-nano-30b-a3b:free",
+]
+
+# Modelo usado para JULGAR a resposta do aluno (evaluate_response). O Claude
+# Sonnet 4.6 via OpenRouter avalia por conceito com bem mais consistência que os
+# modelos free, sem dar nota errada em resposta claramente correta. É um modelo
+# PAGO no OpenRouter — se a chamada falhar, o _llm_chat cai no Groq/OpenAI.
+OPENROUTER_JUDGE_MODELS = [
+    "anthropic/claude-sonnet-4.6",
 ]
 
 
@@ -169,8 +194,45 @@ _MARITIME_PROMPT_EN = (
 )
 
 
+def _transcribe_openrouter(file_obj, lang):
+    """POST direto no endpoint /audio/transcriptions do OpenRouter (JSON com o
+    áudio WAV em base64). Devolve o texto transcrito, ou None se falhar (para o
+    transcribe() cair no fallback Whisper). lang: 'pt' ou 'en'."""
+    try:
+        file_obj.seek(0)
+        audio_b64 = base64.b64encode(file_obj.read()).decode("ascii")
+        resp = requests.post(
+            OPENROUTER_TRANSCRIBE_URL,
+            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
+            json={
+                "model": OPENROUTER_TRANSCRIBE_MODEL,
+                "input_audio": {"data": audio_b64, "format": "wav"},
+                "language": lang,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        text = resp.json().get("text")
+        if text and text.strip():
+            return text.strip()
+        log.warning(f"Transcrição OpenRouter sem texto: {resp.text!r}")
+    except Exception as e:
+        log.warning(f"Transcrição OpenRouter falhou ({OPENROUTER_TRANSCRIBE_MODEL}): {e}")
+    return None
+
+
 def transcribe(file_obj, lang="pt"):
-    """Usa OpenAI/Groq API para transcrever áudio. lang: 'pt' ou 'en'."""
+    """Transcreve áudio (WAV). lang: 'pt' ou 'en'.
+
+    Usa o gpt-4o-mini-transcribe via OpenRouter quando há OPENROUTER_API_KEY;
+    senão (ou se a chamada falhar) cai no Whisper do cliente principal (Groq/
+    OpenAI), que ainda aproveita o prompt de vocabulário marítimo."""
+    if os.getenv("OPENROUTER_API_KEY"):
+        text = _transcribe_openrouter(file_obj, lang)
+        if text is not None:
+            return text
+        file_obj.seek(0)  # rebobina para a tentativa de fallback
+
     prompt = _MARITIME_PROMPT_EN if lang == "en" else _MARITIME_PROMPT_PT
     resp = openai_client.audio.transcriptions.create(
         model=WHISPER_MODEL,
@@ -285,12 +347,16 @@ async def tts_to_bytes(text, voice=None):
         except Exception as e:
             log.error(f"Erro no OpenAI TTS: {e}. Usando fallback (edge-tts)")
 
-    communicate = edge_tts.Communicate(text, voice or TTS_VOICE)
-    audio_chunks = []
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio_chunks.append(chunk["data"])
-    return b"".join(audio_chunks)
+    try:
+        communicate = edge_tts.Communicate(text, voice or TTS_VOICE)
+        audio_chunks = []
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_chunks.append(chunk["data"])
+        return b"".join(audio_chunks)
+    except Exception as e:
+        log.error(f"Erro no edge-tts: {e}. Seguindo sem áudio.")
+        return b""
 
 
 def strip_punctuation_for_tts(text):
@@ -564,12 +630,89 @@ def make_latex_speakable(text):
 
 
 
+def _llm_chat(prompt, models=None, temperature=0.2):
+    """Chama um LLM tentando os modelos free do OpenRouter em ordem e caindo no
+    cliente principal (Groq/OpenAI) como último recurso. Devolve o texto da
+    resposta ou None se tudo falhar. `models` permite usar uma lista própria;
+    por padrão usa os modelos do OpenRouter."""
+    models = OPENROUTER_REVIEW_MODELS if models is None else models
+    attempts = []
+    if openrouter_client is not None:
+        attempts.extend((openrouter_client, m) for m in models)
+    attempts.append((openai_client, LLM_MODEL))
+
+    for client, model in attempts:
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+            )
+            content = resp.choices[0].message.content
+            if content and content.strip():
+                return content.strip()
+        except Exception as e:
+            log.warning(f"LLM: modelo {model} falhou: {e}")
+            continue
+    return None
+
+
+def generate_illustration(question, answer, book=None):
+    """Gera uma ILUSTRAÇÃO DIDÁTICA (PNG) para um flashcard usando o Nano Banana
+    (google/gemini-2.5-flash-image) via OpenRouter. O contexto do livro/assunto
+    (nome do deck) é passado para a imagem combinar com a fonte do card — ex.:
+    um card do livro "Arte Naval" gera uma figura coerente com o tema.
+
+    Devolve os bytes PNG ou None (sem OPENROUTER_API_KEY ou falha na geração).
+    A imagem volta como data URL base64 em message.images[0].image_url.url."""
+    if not os.getenv("OPENROUTER_API_KEY"):
+        log.warning("Geração de imagem indisponível: sem OPENROUTER_API_KEY")
+        return None
+
+    contexto = f'Este flashcard faz parte do material de estudo "{book}". ' if book else ""
+    prompt = (
+        "Crie uma ILUSTRAÇÃO DIDÁTICA para ajudar a memorizar um flashcard de estudo. "
+        f"{contexto}"
+        "A imagem deve representar visualmente o CONCEITO da resposta, como uma figura "
+        "de livro didático: clara, simples e fiel ao conteúdo. NÃO escreva textos, "
+        "palavras, legendas ou números na imagem. Use um fundo limpo.\n\n"
+        f"Pergunta do flashcard: {question}\n"
+        f"Resposta do flashcard: {answer}"
+    )
+    try:
+        resp = requests.post(
+            OPENROUTER_CHAT_URL,
+            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
+            json={
+                "model": OPENROUTER_IMAGE_MODEL,
+                "modalities": ["image", "text"],
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        images = resp.json()["choices"][0]["message"].get("images") or []
+        if not images:
+            log.warning("Geração de imagem sem retorno de imagem")
+            return None
+        url = images[0]["image_url"]["url"]
+        b64 = url.split(",", 1)[1] if "," in url else url
+        return base64.b64decode(b64)
+    except Exception as e:
+        log.warning(f"Geração de imagem falhou ({OPENROUTER_IMAGE_MODEL}): {e}")
+        return None
+
+
 def evaluate_response(question, answer, user_response, lang="pt"):
     """
     Avalia semanticamente a resposta do aluno.
     Retorna (score, feedback) onde feedback é falado em caso de erro.
     Avalia por CONCEITO, não correspondência exata de texto.
     lang: "pt" para português, "en" para inglês.
+
+    O julgamento roda pelo Claude Sonnet 4.6 (OpenRouter), caindo no cliente
+    principal (Groq/OpenAI) só como último recurso: um modelo fraco demais dá
+    notas erradas em respostas claramente corretas.
     """
     if is_obvious_match(answer, user_response):
         return 4, ""
@@ -578,16 +721,18 @@ def evaluate_response(question, answer, user_response, lang="pt"):
     prompt = (
         "Você é uma avaliadora rigorosa, mas justa, de flashcards.\n\n"
         "IMPORTANTE: Avalie pelo CONCEITO, não pela correspondência exata de palavras. "
-        "Se o aluno explicou a mesma ideia com outras palavras, considere correto. "
-        "Se a resposta do aluno for curta, mas contiver o dado essencial do flashcard, considere correto. "
+        "Se o aluno explicou a mesma ideia com outras palavras, conta como compatível. "
+        "Estime quanto do CONTEÚDO ESSENCIAL da Resposta correta a resposta do aluno cobre, "
+        "como uma PORCENTAGEM de compatibilidade (0% a 100%), e atribua a nota por essa porcentagem. "
+        "Não invente exigências que não estão na Resposta correta nem penalize por ela ser mais completa.\n"
         "Considere equivalentes números falados/escritos, siglas faladas letra por letra, pequenas variações de transcrição, artigos omitidos e ordem diferente das palavras.\n\n"
         "RESTRIÇÃO ABSOLUTA: use APENAS a Pergunta e a Resposta correta fornecidas abaixo. "
         "Não acrescente fatos, exemplos, causas, consequências ou explicações externas que não estejam no flashcard.\n\n"
-        "Notas:\n"
-        "1 - Não sabe. Totalmente errado, em branco ou incoerente.\n"
-        "2 - Demonstra algum conhecimento mas está incompleto ou parcialmente errado.\n"
-        "3 - Parcialmente correto — acertou parte do conceito.\n"
-        "4 - Correto — demonstra compreensão, mesmo que em outras palavras.\n\n"
+        "Notas por porcentagem de compatibilidade com a Resposta correta:\n"
+        "4 - ~100% compatível: cobre praticamente todo o conteúdo essencial (correto e completo).\n"
+        "3 - ~90% ou mais compatível: cobre quase todo o conteúdo essencial (correto, faltou pouco).\n"
+        "2 - ~70% compatível: cobre boa parte, mas está incompleto ou parcialmente errado.\n"
+        "1 - ~40% ou menos compatível, ou nada compatível: errou (não sabe, em branco ou incoerente).\n\n"
         f"Regras para o FEEDBACK (sempre {feedback_lang}):\n"
         "- Se a nota for 4, deixe o FEEDBACK em branco.\n"
         "- Se a nota for 1, 2 ou 3, diga apenas o que faltou comparando com a Resposta correta.\n"
@@ -601,11 +746,10 @@ def evaluate_response(question, answer, user_response, lang="pt"):
         f'Resposta do aluno: "{user_response}"'
     )
     
-    resp = openai_client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    raw = resp.choices[0].message.content.strip()
+    raw = _llm_chat(prompt, models=OPENROUTER_JUDGE_MODELS, temperature=0)
+    if not raw:
+        # Sem resposta de nenhum modelo: trata como erro brando (Again) sem feedback.
+        return 1, ""
     log.debug(f"LLM raw: {raw!r}")
 
     score = 2
@@ -654,25 +798,7 @@ def _review_chat(prompt):
     """Chama um LLM grátis para revisar flashcards: tenta os modelos free do
     OpenRouter em ordem e cai no cliente principal (Groq/OpenAI) como último
     recurso. Devolve o texto da resposta ou None se tudo falhar."""
-    attempts = []
-    if openrouter_client is not None:
-        attempts.extend((openrouter_client, m) for m in OPENROUTER_REVIEW_MODELS)
-    attempts.append((openai_client, LLM_MODEL))
-
-    for client, model in attempts:
-        try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-            )
-            content = resp.choices[0].message.content
-            if content and content.strip():
-                return content.strip()
-        except Exception as e:
-            log.warning(f"Revisor: modelo {model} falhou: {e}")
-            continue
-    return None
+    return _llm_chat(prompt, temperature=0.2)
 
 
 def _parse_review_json(raw):
