@@ -26,6 +26,7 @@ import numpy as np
 from flask import Flask, render_template, send_from_directory
 from flask_socketio import SocketIO, emit
 from anki.collection import Collection
+from anki.cards import Card
 from html2text import html2text
 
 from config import ANKI_PATH
@@ -42,9 +43,12 @@ from anki_ai import (
     get_prioritized_card,
     review_flashcard,
     generate_illustration,
+    generate_illustration_video,
+    generate_mcq,
     tts_to_bytes,
     SAMPLE_RATE,
 )
+from html import escape
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
@@ -64,10 +68,31 @@ session_stats = None  # métricas da sessão de estudo em andamento (None = sem 
 # Modo de resposta da sessão: "voice" (fala + avaliação por IA, só cards Basic) ou
 # "buttons" (auto-avaliação Again/Hard/Good/Easy como no Anki, qualquer note type).
 session_mode = "voice"
+# Fluxo da sessão no modo opções: "order" (os cards vêm na ordem Due→New→Learn,
+# como no modo voz) ou "list" (o usuário vê a lista de uma coluna — Learn/New/Due
+# — e escolhe qual card responder fora de ordem, para reduzir a pilha).
+session_flow = "order"
+# Coluna (new/learn/review) exibida no momento no modo listagem — usada para
+# reenviar a lista atualizada depois de responder um card.
+session_list_column = "review"
 
 # Ilustração gerada (modo opções) aguardando aprovação. Guardada entre o preview
 # e o "Usar imagem" para não regenerar ao aprovar. {"note_id": int, "png": bytes}.
 pending_illustration = None
+
+# Vídeo ilustrativo gerado (modo opções) aguardando aprovação. Guardado entre o
+# preview e o "Usar vídeo" para não regenerar ao aprovar. {"note_id": int,
+# "mp4": bytes}.
+pending_illustration_video = None
+
+# Note type de múltipla escolha (já existente na coleção do usuário) usado para
+# transformar um card difícil em questão de alternativas. Campos: question,
+# optionA..optionZ, answer (a letra do gabarito), note e noteA..noteZ.
+MCQ_NOTE_TYPE = "IKKZ__MCQ_26.PT_BR.NATIVE"
+# Múltipla escolha gerada (modo opções) aguardando confirmação. Guardada entre o
+# preview e o "Criar e substituir" (a criação apaga a nota original, então o
+# usuário confere antes). {"note_id": int, "mcq": dict de generate_mcq}.
+pending_mcq = None
 
 # Histórico de sessões: uma lista JSON em disco, append-only. Fica fora do git
 # (uso pessoal) e mora ao lado deste arquivo para não depender do CWD.
@@ -265,6 +290,11 @@ QUEUE_LEARN_INTRADAY = 1
 # Quantos cards à frente vasculhar para pular a "frente" de learning e achar o Due.
 # Generoso de propósito: cobre o caso de muitos learning empilhados antes do Due.
 CARD_LOOKAHEAD = 500
+# Tamanho da janela ao varrer a fila inteira (listagem + resposta fora de ordem).
+# Tem que ser o MESMO nos dois lados: a lista é montada com este limite, então o
+# card que o usuário escolhe precisa caber na mesma janela ao ser respondido —
+# senão um card fundo (pilha grande) "não some" da lista ao ser respondido.
+QUEUE_FETCH_LIMIT = 9999
 
 
 def _pick_next_card(col):
@@ -351,6 +381,101 @@ def next_button_labels(col, card):
     describe_next_states devolve sempre 4 strings na ordem again/hard/good/easy."""
     states = col._backend.get_scheduling_states(card.id)
     return list(col.sched.describe_next_states(states))
+
+
+def _card_preview(card):
+    """Texto curto da pergunta do card para a listagem (sem imagens/HTML)."""
+    try:
+        q = html2text(strip_images_from_text(card.question())).strip()
+    except Exception as e:
+        log.warning(f"Preview do card {card.id} falhou: {e}")
+        q = ""
+    q = " ".join(q.split())  # colapsa quebras/espaços
+    if not q:
+        return "(sem texto)"
+    return q[:120] + "…" if len(q) > 120 else q
+
+
+def collect_queue_by_state(col, fetch_limit=QUEUE_FETCH_LIMIT):
+    """Agrupa a fila ativa do deck atual (na ordem do scheduler) por coluna
+    new/learn/review, com um preview de texto de cada card. Reflete exatamente o
+    que está estudável hoje — a mesma base dos contadores de counts()."""
+    groups = {"new": [], "learn": [], "review": []}
+    for queued in col.sched.get_queued_cards(fetch_limit=fetch_limit).cards:
+        card = Card(col)
+        card._load_from_backend_card(queued.card)
+        groups.setdefault(card_state(card), []).append(
+            {"id": card.id, "preview": _card_preview(card)}
+        )
+    return groups
+
+
+def answer_specific_card(col, target_id, ease):
+    """Responde um card ESPECÍFICO fora de ordem (modo listagem), contornando a
+    regra do scheduler v3 de que só dá pra responder o topo da fila.
+
+    Para isso enterra temporariamente os cards que ficam à frente do alvo na fila
+    e os desenterra logo depois (no finally) — só os que ESTE método enterrou,
+    pelos ids exatos, então skips/buries anteriores do usuário não são tocados.
+    Cards de learning são preservados pelo par bury/unbury; e como learning pode
+    ser "pulado" ao responder um não-learning, para alvo não-learning nem precisa
+    enterrá-los. Para alvo learning (só o topo absoluto é respondível) enterra
+    tudo à frente. Devolve o card respondido ou None se não der.
+
+    O bury/unbury de toda a frente é pesado, mas é a operação que o Anki garante:
+    confirmado num clone da coleção que não dá 'not at top of queue' e que os
+    demais cards voltam intactos."""
+    buried = []
+    try:
+        for _ in range(500):  # teto de segurança (cada passo enterra a janela toda)
+            # Mesma janela da listagem: o card escolhido pode estar fundo numa
+            # pilha grande, e precisa caber aqui para ser encontrado/respondido.
+            cards = col.sched.get_queued_cards(fetch_limit=QUEUE_FETCH_LIMIT).cards
+            by_id = {c.card.id: c for c in cards}
+            if target_id not in by_id:
+                # Alvo ainda não visível: se a janela veio cheia, pode haver mais
+                # cards atrás — enterra a frente não-learning para trazê-los à
+                # tona e tenta de novo. Senão, o alvo realmente sumiu (já respondido).
+                if len(cards) >= QUEUE_FETCH_LIMIT:
+                    front = [
+                        c.card.id for c in cards
+                        if c.card.queue != QUEUE_LEARN_INTRADAY
+                    ]
+                    if front:
+                        col.sched.bury_cards(front, manual=True)
+                        buried.extend(front)
+                        continue
+                return None  # alvo saiu da fila (já respondido?) — nada a fazer
+            target_is_learn = by_id[target_id].card.queue == QUEUE_LEARN_INTRADAY
+            if target_is_learn:
+                # Learning só é respondível no topo absoluto da fila.
+                answerable = cards[0].card.id == target_id
+                to_bury = [c.card.id for c in cards if c.card.id != target_id]
+            else:
+                # Não-learning é respondível quando é o 1º não-learning (learning
+                # à frente é pulado pelo scheduler).
+                first_non_learn = next(
+                    (c.card.id for c in cards if c.card.queue != QUEUE_LEARN_INTRADAY), None
+                )
+                answerable = first_non_learn == target_id
+                to_bury = [
+                    c.card.id for c in cards
+                    if c.card.id != target_id and c.card.queue != QUEUE_LEARN_INTRADAY
+                ]
+            if answerable:
+                card = Card(col)
+                card._load_from_backend_card(by_id[target_id].card)
+                card.start_timer()
+                col.sched.answerCard(card, ease)
+                return card
+            if not to_bury:
+                return None  # nada a enterrar e ainda não é o topo: desiste
+            col.sched.bury_cards(to_bury, manual=True)
+            buried.extend(to_bury)
+        return None
+    finally:
+        if buried:
+            col.sched.unbury_cards(buried)
 
 
 @app.route("/")
@@ -732,18 +857,24 @@ def handle_start_session(data):
     """Inicia sessão de estudo focada no deck selecionado.
 
     data['mode']: 'voice' (padrão — resposta falada avaliada por IA) ou 'buttons'
-    (auto-avaliação Again/Hard/Good/Easy, como no Anki)."""
-    global session_mode
+    (auto-avaliação Again/Hard/Good/Easy, como no Anki).
+    data['flow'] (só no modo 'buttons'): 'order' (padrão — cards na ordem
+    Due→New→Learn) ou 'list' (o usuário escolhe da lista qual card responder)."""
+    global session_mode, session_flow
     finalize_session()  # grava sessão anterior não finalizada, se houver
     deck_id = data.get("deck_id")
     session_mode = "buttons" if data.get("mode") == "buttons" else "voice"
+    session_flow = "list" if (session_mode == "buttons" and data.get("flow") == "list") else "order"
     col = get_collection()
     deck_name = "Todos os decks"
     if deck_id:
         col.decks.set_current(deck_id)
         deck_name = col.decks.name(deck_id)
     start_session_stats(deck_name)
-    send_next_card()
+    if session_flow == "list":
+        emit_card_list()  # modo listagem: abre na lista, sem servir card ainda
+    else:
+        send_next_card()
 
 
 # Mapeia a fila (queue)/tipo (type) do Anki para a categoria exibida na tela.
@@ -872,6 +1003,53 @@ def send_card_buttons(card):
         "answer_html": _media_rewritten(out.answer_and_style()),
         "buttons": next_button_labels(get_collection(), card),
     })
+
+
+def emit_card_list(column=None):
+    """Modo listagem: envia a lista de cards de cada coluna (Learn/New/Due) do
+    deck atual mais os contadores, destacando a coluna `column` (mantém a
+    anterior se None). O cliente mostra a lista e escolhe um card para responder."""
+    global session_list_column
+    if column in ("new", "learn", "review"):
+        session_list_column = column
+    col = get_collection()
+    groups = collect_queue_by_state(col)
+    emit("card_list", {
+        "column": session_list_column,
+        "cards": groups,
+        "counts": {k: len(v) for k, v in groups.items()},
+    })
+
+
+@socketio.on("list_cards")
+def handle_list_cards(data):
+    """Modo listagem: o usuário trocou de coluna (ou pediu a lista). Reenvia."""
+    emit_card_list(column=(data or {}).get("column"))
+
+
+@socketio.on("pick_card")
+def handle_pick_card(data):
+    """Modo listagem: o usuário escolheu um card da lista para responder. Carrega
+    e exibe esse card (pergunta + resposta + botões), como no modo opções. A
+    resposta fora de ordem acontece no answer_button via answer_specific_card."""
+    global current_card, current_question
+    try:
+        card_id = int((data or {}).get("card_id"))
+    except (TypeError, ValueError):
+        emit("error", {"message": "Card inválido"})
+        return
+    col = get_collection()
+    try:
+        card = col.get_card(card_id)
+        question_html = card.question()
+    except Exception as e:
+        log.error(f"Erro ao abrir card {card_id} da lista: {e}")
+        emit("error", {"message": "Não foi possível abrir esse card."})
+        return
+    current_card = card
+    current_question = html2text(strip_images_from_text(question_html)).strip()
+    emit_stats(card)
+    send_card_buttons(card)
 
 
 @socketio.on("audio_answer")
@@ -1003,6 +1181,21 @@ def handle_answer_button(data):
 
     card = current_card
     col = get_collection()
+
+    # Modo listagem: o card escolhido não está no topo da fila, então usa
+    # answer_specific_card (enterra a frente, responde, desenterra). Depois volta
+    # para a lista atualizada em vez de servir o próximo card automaticamente.
+    if session_flow == "list":
+        current_card = None
+        answered = answer_specific_card(col, card.id, ease)
+        if answered is None:
+            emit("error", {"message": "Não foi possível responder esse card agora."})
+            emit_card_list()
+            return
+        record_answer(passed=ease != 1, score=ease)
+        emit_card_list()
+        return
+
     try:
         # ease 1/2/3/4 mapeia exatamente para Again/Hard/Good/Easy no scheduler v3.
         col.sched.answerCard(card, ease)
@@ -1107,6 +1300,191 @@ def handle_discard_illustration():
     pending_illustration = None
 
 
+@socketio.on("generate_video")
+def handle_generate_video():
+    """Modo opções: gera um vídeo didático curto para o card atual (Veo 3.1 Fast
+    via OpenRouter), passando pergunta/resposta e o livro/assunto (nome do deck)
+    como contexto, e envia um preview para o usuário aprovar. O vídeo só é gravado
+    no card no 'approve_video'. A geração é assíncrona e leva ~1-2 min."""
+    global pending_illustration_video
+    card = current_card
+    if card is None:
+        emit("video_error", {"message": "Nenhum card ativo"})
+        return
+
+    col = get_collection()
+    note = card.note()
+    deck_id = getattr(card, "odid", 0) or card.did
+    book = col.decks.name(deck_id).replace("::", " / ")
+    question = current_question or ""
+    answer = html2text(strip_images_from_text(answer_only_html(card.answer()))).strip()
+
+    emit("video_status", {"message": "Gerando vídeo... (pode levar 1-2 min)"})
+    eventlet.sleep(0)
+    mp4 = tpool.execute(lambda: generate_illustration_video(question, answer, book=book))
+    if not mp4:
+        emit("video_error", {"message": "Não foi possível gerar o vídeo."})
+        return
+
+    pending_illustration_video = {"note_id": note.id, "mp4": mp4}
+    emit("video_preview", {
+        "video": "data:video/mp4;base64," + base64.b64encode(mp4).decode(),
+    })
+
+
+@socketio.on("approve_video")
+def handle_approve_video():
+    """Modo opções: grava o vídeo aprovado na mídia do Anki e o anexa ao verso da
+    nota como [sound:...], que o Anki renderiza como player de vídeo nas próximas
+    revisões."""
+    global pending_illustration_video
+    if not pending_illustration_video:
+        emit("video_error", {"message": "Nenhum vídeo para aprovar."})
+        return
+
+    col = get_collection()
+    try:
+        note = col.get_note(pending_illustration_video["note_id"])
+    except Exception:
+        pending_illustration_video = None
+        emit("video_error", {"message": "Nota não encontrada."})
+        return
+
+    try:
+        fname = col.media.write_data("ilustracao.mp4", pending_illustration_video["mp4"])
+        idx = _answer_field_index(note)
+        sep = "<br>" if note.fields[idx].strip() else ""
+        note.fields[idx] += f"{sep}[sound:{fname}]"
+        col.update_note(note)
+    except Exception as e:
+        log.error(f"Erro ao salvar vídeo: {e}")
+        emit("video_error", {"message": "Erro ao salvar o vídeo no card."})
+        return
+    finally:
+        pending_illustration_video = None
+
+    emit("video_saved", {"src": "/media/" + fname})
+
+
+@socketio.on("discard_video")
+def handle_discard_video():
+    """Descarta o vídeo em preview sem gravá-lo no card."""
+    global pending_illustration_video
+    pending_illustration_video = None
+
+
+# ---------------------------------------------------------------------------
+# Transformar card difícil em questão de múltipla escolha (modo opções)
+# ---------------------------------------------------------------------------
+
+def _create_mcq_note(col, source_note, mcq):
+    """Cria uma nota de múltipla escolha (MCQ_NOTE_TYPE) a partir do dict gerado
+    por generate_mcq, no MESMO deck e com as MESMAS tags da nota original. Os
+    textos vêm do LLM em texto plano, então são escapados para não quebrar o HTML
+    do campo. Devolve a nova nota (já adicionada à coleção)."""
+    model = col.models.by_name(MCQ_NOTE_TYPE)
+    if model is None:
+        raise RuntimeError(f'Note type "{MCQ_NOTE_TYPE}" não encontrado na coleção')
+    note = col.new_note(model)
+    field_idx = {f["name"]: i for i, f in enumerate(note.note_type()["flds"])}
+
+    def setf(name, value):
+        if name in field_idx:
+            note.fields[field_idx[name]] = value
+
+    setf("question", f'<div><strong>{escape(mcq["question"], quote=False)}</strong></div>')
+    for letter, text in mcq["options"].items():
+        # Mesmo formato dos cards existentes: o texto do campo já traz "A) ...".
+        setf(f"option{letter}", f"{letter}) {escape(text, quote=False)}")
+    setf("answer", mcq["answer"])
+    if mcq.get("note"):
+        setf("note", escape(mcq["note"], quote=False))
+    for letter, text in (mcq.get("notes") or {}).items():
+        setf(f"note{letter}", escape(text, quote=False))
+
+    note.tags = list(source_note.tags)
+    orig_cards = source_note.cards()
+    if orig_cards:
+        deck_id = getattr(orig_cards[0], "odid", 0) or orig_cards[0].did
+    else:
+        deck_id = col.decks.get_current_id()
+    col.add_note(note, deck_id)
+    return note
+
+
+@socketio.on("make_mcq")
+def handle_make_mcq():
+    """Modo opções: gera uma questão de múltipla escolha a partir do card atual
+    (Claude Sonnet via OpenRouter), citando o baralho/assunto como referência no
+    enunciado, e envia um preview. A criação/substituição só ocorre no
+    'approve_mcq' — assim o usuário confere antes de apagar o card original."""
+    global pending_mcq
+    card = current_card
+    if card is None:
+        emit("mcq_error", {"message": "Nenhum card ativo"})
+        return
+
+    col = get_collection()
+    note = card.note()
+    deck_id = getattr(card, "odid", 0) or card.did
+    book = col.decks.name(deck_id).replace("::", " / ")
+    question = current_question or html2text(strip_images_from_text(card.question())).strip()
+    answer = html2text(strip_images_from_text(answer_only_html(card.answer()))).strip()
+
+    emit("mcq_status", {"message": "Gerando múltipla escolha..."})
+    eventlet.sleep(0)
+    mcq = tpool.execute(lambda: generate_mcq(question, answer, book=book))
+    if not mcq:
+        emit("mcq_error", {"message": "Não foi possível gerar a múltipla escolha."})
+        return
+
+    pending_mcq = {"note_id": note.id, "mcq": mcq}
+    emit("mcq_preview", {"mcq": mcq})
+
+
+@socketio.on("approve_mcq")
+def handle_approve_mcq():
+    """Modo opções: cria o card de múltipla escolha e APAGA a nota original
+    (transformação). Cria primeiro e só então remove — se a criação falhar, o
+    card original é preservado. Depois avança (lista ou próximo card)."""
+    global pending_mcq, current_card
+    if not pending_mcq:
+        emit("mcq_error", {"message": "Nenhuma múltipla escolha para criar."})
+        return
+
+    col = get_collection()
+    try:
+        source = col.get_note(pending_mcq["note_id"])
+    except Exception:
+        pending_mcq = None
+        emit("mcq_error", {"message": "Nota original não encontrada."})
+        return
+
+    try:
+        _create_mcq_note(col, source, pending_mcq["mcq"])
+        col.remove_notes([source.id])
+    except Exception as e:
+        log.error(f"Erro ao transformar em múltipla escolha (nota {source.id}): {e}")
+        emit("mcq_error", {"message": "Erro ao criar o card de múltipla escolha."})
+        return
+    finally:
+        pending_mcq = None
+
+    current_card = None
+    emit("mcq_created", {"message": "Card transformado em múltipla escolha."})
+    if session_flow == "list":
+        emit_card_list()
+    else:
+        send_next_card()
+
+
+@socketio.on("discard_mcq")
+def handle_discard_mcq():
+    """Descarta a múltipla escolha em preview sem criar nada nem apagar o card."""
+    global pending_mcq
+    pending_mcq = None
+
+
 @socketio.on("skip_card")
 def handle_skip_card():
     """Pula o card atual enterrando-o (bury). Apenas "esconder na sessão" não
@@ -1116,7 +1494,10 @@ def handle_skip_card():
     if current_card:
         get_collection().sched.bury_cards([current_card.id])
         record_skip()
-    send_next_card()
+    if session_flow == "list":
+        emit_card_list()
+    else:
+        send_next_card()
 
 
 @socketio.on("flag_bad_card")
@@ -1133,7 +1514,10 @@ def handle_flag_bad_card():
         col.tags.bulk_add([note.id], BAD_CARD_TAG)
         col.sched.suspend_cards(card_ids)
         current_card = None
-    send_next_card()
+    if session_flow == "list":
+        emit_card_list()
+    else:
+        send_next_card()
 
 
 @socketio.on("next_card")

@@ -59,6 +59,13 @@ OPENROUTER_TRANSCRIBE_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
 OPENROUTER_IMAGE_MODEL = "google/gemini-2.5-flash-image"
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# Geração de VÍDEO (Veo 3.1 Fast) via OpenRouter para ilustrar flashcards. Ao
+# contrário da imagem, o vídeo usa o endpoint assíncrono /videos: faz-se um POST
+# que devolve um job com `polling_url`; aí faz-se polling até `completed` e baixa
+# o MP4. Veja generate_illustration_video.
+OPENROUTER_VIDEO_MODEL = "google/veo-3.1-fast"
+OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
+
 # Cliente OpenRouter (modelos grátis) usado pelo revisor de flashcards em
 # background. OpenRouter é compatível com a API da OpenAI — basta trocar a
 # base_url. Se a chave não estiver no .env, o revisor cai no Groq/OpenAI.
@@ -85,6 +92,14 @@ OPENROUTER_REVIEW_MODELS = [
 # modelos free, sem dar nota errada em resposta claramente correta. É um modelo
 # PAGO no OpenRouter — se a chamada falhar, o _llm_chat cai no Groq/OpenAI.
 OPENROUTER_JUDGE_MODELS = [
+    "anthropic/claude-sonnet-4.6",
+]
+
+# Modelo usado para TRANSFORMAR um flashcard difícil numa questão de múltipla
+# escolha (generate_mcq). Claude Sonnet 4.6 via OpenRouter: precisa entender o
+# conteúdo e criar alternativas plausíveis com um único gabarito. É PAGO — se a
+# chamada falhar, o _llm_chat cai no Groq/OpenAI (qualidade menor, mas não trava).
+OPENROUTER_MCQ_MODELS = [
     "anthropic/claude-sonnet-4.6",
 ]
 
@@ -701,6 +716,233 @@ def generate_illustration(question, answer, book=None):
     except Exception as e:
         log.warning(f"Geração de imagem falhou ({OPENROUTER_IMAGE_MODEL}): {e}")
         return None
+
+
+def _find_video_urls(obj):
+    """Vasculha recursivamente o JSON de um job de vídeo do OpenRouter atrás de
+    URLs de download já prontas (não precisam de auth). O formato da resposta
+    varia entre modelos, então em vez de fixar um caminho (unsigned_urls, output.
+    video, assets...), coletamos toda string http(s) e priorizamos as que parecem
+    ser o arquivo de vídeo (.mp4/.webm ou chave 'url'/'unsigned')."""
+    found = []
+
+    def walk(node, key=""):
+        if isinstance(node, str):
+            if node.startswith("http"):
+                score = 0
+                low = node.lower()
+                k = key.lower()
+                if ".mp4" in low or ".webm" in low or ".mov" in low:
+                    score += 2
+                if "unsigned" in k or k in ("url", "video", "video_url"):
+                    score += 1
+                # Evita a própria polling_url / links de API (não são o arquivo).
+                if "/api/v1/videos" in low:
+                    score -= 3
+                found.append((score, node))
+        elif isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, k)
+        elif isinstance(node, (list, tuple)):
+            for v in node:
+                walk(v, key)
+
+    walk(obj)
+    found.sort(key=lambda t: t[0], reverse=True)
+    return [u for score, u in found if score >= 0]
+
+
+def generate_illustration_video(question, answer, book=None):
+    """Gera um VÍDEO DIDÁTICO curto (MP4) para um flashcard usando o Veo 3.1 Fast
+    (google/veo-3.1-fast) via OpenRouter. O objetivo é ajudar a entender melhor a
+    RESPOSTA do card — uma animação clara do conceito, com o contexto do livro/
+    assunto (nome do deck) para casar com a fonte.
+
+    A geração é assíncrona: um POST em /videos devolve um job com `polling_url`;
+    faz-se polling até `completed` e então baixa-se o MP4. Devolve os bytes MP4 ou
+    None (sem OPENROUTER_API_KEY, timeout do polling ou falha na geração)."""
+    if not os.getenv("OPENROUTER_API_KEY"):
+        log.warning("Geração de vídeo indisponível: sem OPENROUTER_API_KEY")
+        return None
+
+    contexto = f'Este flashcard faz parte do material de estudo "{book}". ' if book else ""
+    prompt = (
+        "Crie um VÍDEO DIDÁTICO curto para ajudar a ENTENDER e memorizar a resposta "
+        "de um flashcard de estudo. "
+        f"{contexto}"
+        "O vídeo deve mostrar visualmente o CONCEITO da resposta, como uma animação "
+        "de livro didático: clara, simples e fiel ao conteúdo, com movimento que "
+        "ajude a compreender a ideia. Evite texto escrito na tela.\n\n"
+        f"Pergunta do flashcard: {question}\n"
+        f"Resposta do flashcard (o que o vídeo precisa explicar): {answer}"
+    )
+    headers = {"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"}
+    try:
+        resp = requests.post(
+            OPENROUTER_VIDEO_URL,
+            headers=headers,
+            json={
+                "model": OPENROUTER_VIDEO_MODEL,
+                "prompt": prompt,
+                "duration": 4,
+                "resolution": "720p",
+                "aspect_ratio": "16:9",
+                "generate_audio": True,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        job = resp.json()
+    except Exception as e:
+        log.warning(f"Geração de vídeo falhou ao iniciar ({OPENROUTER_VIDEO_MODEL}): {e}")
+        return None
+
+    job_id = job.get("id")
+    poll_url = job.get("polling_url") or (f"{OPENROUTER_VIDEO_URL}/{job_id}" if job_id else None)
+    if not poll_url:
+        log.warning(f"Geração de vídeo sem polling_url/id: {job}")
+        return None
+
+    # Vídeo leva ~1-3 min. Polling limitado para o worker não rodar pra sempre.
+    for _ in range(40):
+        time.sleep(8)
+        try:
+            pr = requests.get(poll_url, headers=headers, timeout=60)
+            pr.raise_for_status()
+            job = pr.json()
+        except Exception as e:
+            log.warning(f"Geração de vídeo: polling falhou: {e}")
+            continue
+        status = job.get("status")
+        if status == "completed":
+            break
+        if status in ("failed", "cancelled", "expired"):
+            log.warning(f"Geração de vídeo terminou como '{status}': {job.get('error')}")
+            return None
+    else:
+        log.warning("Geração de vídeo: tempo esgotado no polling")
+        return None
+
+    # Baixa o MP4. O job completo traz as URLs prontas (assinadas/unsigned) em
+    # algum lugar do JSON — o formato varia, então vasculhamos recursivamente
+    # atrás de qualquer URL de vídeo, que baixa SEM auth. Só caímos no endpoint
+    # autenticado /content?index=0 se não acharmos nenhuma (ele deu 401 antes).
+    urls = _find_video_urls(job)
+    log.info(f"Geração de vídeo: job concluído, chaves={list(job.keys())}, urls={urls}")
+    try:
+        if urls:
+            vr = requests.get(urls[0], timeout=120)
+        else:
+            vr = requests.get(f"{OPENROUTER_VIDEO_URL}/{job_id}/content?index=0",
+                              headers=headers, timeout=120)
+        vr.raise_for_status()
+        return vr.content
+    except Exception as e:
+        log.warning(f"Geração de vídeo: download falhou: {e}")
+        return None
+
+
+# Prompt para converter um flashcard pergunta-e-resposta numa questão de
+# múltipla escolha. Objetivo: cartão difícil vira uma questão mais fácil de
+# revisar. O enunciado SEMPRE cita a referência ("De acordo com o <livro>, ...")
+# para ancorar a memória. O gabarito reproduz a resposta original; os distratores
+# são plausíveis, porém errados. A saída é um JSON estrito (parseado abaixo).
+MCQ_PROMPT = """Você transforma um flashcard de pergunta-e-resposta numa QUESTÃO DE MÚLTIPLA ESCOLHA, para tornar um cartão difícil mais fácil de revisar.
+
+Fonte/referência do material (use o nome do livro/assunto principal, não o caminho todo): <<<BOOK>>>
+
+Flashcard original:
+Pergunta: <<<QUESTION>>>
+Resposta correta: <<<ANSWER>>>
+
+Regras:
+- ENUNCIADO ("question"): reescreva a pergunta como um enunciado claro e, SEMPRE que houver uma referência acima, CITE-A no começo, no formato "De acordo com o <referência>, ...". Cite a fonte pelo NOME e de forma natural (ex.: "De acordo com o Arte Naval, ..."); NÃO repita o caminho do baralho, barras (/) nem "::". Se a referência tiver vários níveis, use só o nome principal do livro/assunto. Se não houver referência útil, faça um enunciado claro sem citar.
+- ALTERNATIVAS ("options"): crie de 4 a 5 alternativas. EXATAMENTE UMA é a correta e deve reproduzir fielmente a Resposta correta do flashcard. As outras são plausíveis, do mesmo tema/tipo, mas claramente erradas para quem estudou o material. NÃO escreva a letra (A), B)...) dentro do texto — só o texto da alternativa.
+- GABARITO ("answer"): a letra da alternativa correta (uma letra maiúscula).
+- "note": explique em uma frase por que a correta está certa, usando só o conteúdo do flashcard.
+- "notes": para CADA letra, uma frase dizendo por que aquela alternativa está certa ou errada.
+- Mantenha o MESMO IDIOMA do flashcard. NÃO invente fatos que contrariem o flashcard.
+
+Responda SOMENTE com um JSON válido, sem texto antes ou depois, neste formato EXATO:
+{"question": "<enunciado>", "options": {"A": "<texto>", "B": "<texto>", "C": "<texto>", "D": "<texto>"}, "answer": "B", "note": "<por que a correta está certa>", "notes": {"A": "<por quê>", "B": "<por quê>", "C": "<por quê>", "D": "<por quê>"}}"""
+
+
+def _parse_mcq_json(raw):
+    """Extrai e valida o JSON da múltipla escolha. Devolve um dict normalizado
+    {question, options{A..}, answer, note, notes{A..}} com as letras REORDENADAS
+    de forma contígua a partir de 'A' (o gabarito é remapeado junto), ou None se
+    a resposta do LLM for inválida."""
+    text = raw.strip()
+    text = re.sub(r'^```(?:json)?', '', text).strip()
+    text = re.sub(r'```$', '', text).strip()
+    start, end = text.find('{'), text.rfind('}')
+    if start == -1 or end == -1 or end < start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    question = str(data.get("question", "")).strip()
+    raw_options = data.get("options")
+    raw_notes = data.get("notes") or {}
+    answer = str(data.get("answer", "")).strip().upper()[:1]
+    if not question or not raw_options:
+        return None
+
+    # options pode vir como dict {"A": "..."} ou como lista ["...", ...].
+    if isinstance(raw_options, dict):
+        ordered_keys = sorted(k.strip().upper() for k in raw_options.keys() if str(k).strip())
+        texts = [str(raw_options[k]).strip() for k in ordered_keys]
+        note_for = lambda i: str(raw_notes.get(ordered_keys[i], "")).strip() if isinstance(raw_notes, dict) else ""
+        answer_idx = ordered_keys.index(answer) if answer in ordered_keys else -1
+    elif isinstance(raw_options, list):
+        texts = [str(o).strip() for o in raw_options]
+        note_list = raw_notes if isinstance(raw_notes, list) else []
+        note_for = lambda i: str(note_list[i]).strip() if i < len(note_list) else ""
+        # Na forma de lista o gabarito costuma vir como letra (A=0, B=1, ...).
+        answer_idx = ord(answer) - ord("A") if answer.isalpha() else -1
+    else:
+        return None
+
+    texts = [t for t in texts if t]
+    if not (2 <= len(texts) <= 8):
+        return None
+    if not (0 <= answer_idx < len(texts)):
+        return None
+
+    letters = [chr(ord("A") + i) for i in range(len(texts))]
+    options = dict(zip(letters, texts))
+    notes = {}
+    for i, letter in enumerate(letters):
+        n = note_for(i)
+        if n:
+            notes[letter] = n
+    return {
+        "question": question,
+        "options": options,
+        "answer": letters[answer_idx],
+        "note": str(data.get("note", "")).strip(),
+        "notes": notes,
+    }
+
+
+def generate_mcq(question, answer, book=None):
+    """Gera uma questão de MÚLTIPLA ESCOLHA a partir de um flashcard (texto da
+    pergunta + resposta), via Claude Sonnet 4.6 no OpenRouter. O `book` (nome do
+    deck/assunto) vira a referência citada no enunciado. Devolve o dict
+    normalizado de _parse_mcq_json ou None se o LLM não respondeu de forma
+    utilizável (ex.: sem OPENROUTER_API_KEY e fallback também falhou)."""
+    prompt = (
+        MCQ_PROMPT
+        .replace("<<<BOOK>>>", book or "(sem referência)")
+        .replace("<<<QUESTION>>>", question or "")
+        .replace("<<<ANSWER>>>", answer or "")
+    )
+    raw = _llm_chat(prompt, models=OPENROUTER_MCQ_MODELS, temperature=0.4)
+    if not raw:
+        return None
+    return _parse_mcq_json(raw)
 
 
 def evaluate_response(question, answer, user_response, lang="pt"):

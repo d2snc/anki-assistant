@@ -312,12 +312,101 @@
         .mode-label { font-weight: 700; font-size: 1rem; }
         .mode-desc { font-size: 0.8rem; color: var(--text-muted); }
 
+        /* Modo listagem: escolher da pilha qual card responder */
+        #list-screen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            width: 100%;
+            max-width: 640px;
+            margin: 0 auto;
+            padding: 16px;
+        }
+        .list-hint { font-size: 0.9rem; color: var(--text-muted); text-align: center; margin: 0; }
+        #list-tabs {
+            display: flex;
+            gap: 8px;
+            width: 100%;
+        }
+        .list-tab {
+            flex: 1;
+            padding: 10px 6px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            color: var(--text-muted);
+            font-weight: 700;
+            font-size: 0.9rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        .list-tab:hover { background: var(--bg-card-hover); }
+        .list-tab.active { color: var(--text-primary); border-color: var(--accent); background: var(--bg-card-hover); }
+        .list-tab-count {
+            font-size: 0.8rem;
+            padding: 1px 8px;
+            border-radius: 999px;
+            background: rgba(0, 0, 0, 0.28);
+        }
+        #list-cards {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+        .list-card-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            cursor: pointer;
+            text-align: left;
+        }
+        .list-card-item:hover { background: var(--bg-card-hover); border-color: var(--accent); }
+        .list-card-num {
+            flex-shrink: 0;
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            min-width: 1.5em;
+        }
+        .list-card-text {
+            flex: 1;
+            color: var(--text-primary);
+            font-size: 0.95rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .list-empty { color: var(--text-muted); text-align: center; padding: 24px; }
+
         /* Modo opções: "Mostrar resposta" e os botões Again/Hard/Good/Easy */
         #answer-controls {
             padding: 0 20px 8px;
             display: flex;
-            justify-content: center;
-            flex-shrink: 0;
+            /* Empilha verticalmente: botões de avaliação, depois as ferramentas
+               (ilustração / múltipla escolha). Antes era uma linha (row), que
+               espremia as ferramentas lado a lado. */
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            /* Deixa a área encolher e ROLAR quando as ferramentas ficam altas
+               (ex.: preview da múltipla escolha). Sem isso, os botões de ação
+               ("Criar e substituir") eram cortados para fora da tela, já que o
+               body tem overflow:hidden — daí precisar dar zoom out para clicar. */
+            flex-shrink: 1;
+            min-height: 0;
+            max-height: 62vh;
+            overflow-y: auto;
         }
         #btn-show-answer {
             padding: 16px 32px;
@@ -399,6 +488,99 @@
         #illustration-actions .btn { flex: 1; min-width: 120px; }
         .btn-illust-use { background: #22c55e; color: white; }
         .btn-illust-use:hover:not(:disabled) { filter: brightness(1.12); }
+
+        /* Vídeo ilustrativo gerado por IA (modo opções) */
+        #video-tools {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            max-width: 600px;
+            margin-top: 4px;
+        }
+        #btn-video { width: 100%; }
+        #video-preview-area {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+        }
+        #video-el {
+            max-width: 100%;
+            max-height: 320px;
+            border-radius: 10px;
+            border: 1px solid var(--border, #333);
+            background: #000;
+        }
+        #video-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: center;
+            width: 100%;
+        }
+        #video-actions .btn { flex: 1; min-width: 120px; }
+
+        /* Transformar em múltipla escolha (modo opções) */
+        #mcq-tools {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            max-width: 600px;
+            margin-top: 4px;
+        }
+        #btn-mcq { width: 100%; }
+        #mcq-preview-area {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            width: 100%;
+        }
+        #mcq-preview {
+            text-align: left;
+            background: var(--bg-card, #1b1b1f);
+            border: 1px solid var(--border, #333);
+            border-radius: 10px;
+            padding: 14px 16px;
+            /* Rola dentro da própria caixa quando há muitas alternativas/notas,
+               mantendo os botões "Criar e substituir" logo abaixo, visíveis. */
+            max-height: 38vh;
+            overflow-y: auto;
+        }
+        #mcq-preview .mcq-q { font-weight: 700; margin-bottom: 10px; }
+        #mcq-preview .mcq-opt {
+            display: flex;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: 8px;
+            margin-bottom: 4px;
+            border: 1px solid transparent;
+        }
+        #mcq-preview .mcq-opt .mcq-letter { font-weight: 700; min-width: 1.3em; }
+        #mcq-preview .mcq-opt.correct {
+            background: rgba(34, 197, 94, 0.14);
+            border-color: #22c55e;
+        }
+        #mcq-preview .mcq-opt.correct .mcq-letter { color: #22c55e; }
+        #mcq-preview .mcq-note {
+            margin-top: 8px;
+            font-size: 0.88em;
+            color: var(--text-muted, #9aa);
+            border-top: 1px dashed var(--border, #333);
+            padding-top: 8px;
+        }
+        #mcq-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: center;
+            width: 100%;
+        }
+        #mcq-actions .btn { flex: 1; min-width: 120px; }
 
         /* Score badge */
         #score-badge {
@@ -960,20 +1142,42 @@
             <!-- Escolha de modo (aparece após selecionar um deck) -->
             <div id="mode-screen" class="hidden">
                 <p id="mode-deck-name" class="mode-deck"></p>
-                <p class="mode-prompt">Como você quer responder?</p>
-                <div class="mode-options">
-                    <button class="btn mode-btn" onclick="startSession(selectedDeckId, 'voice')">
-                        <span class="mode-emoji">🎙️</span>
-                        <span class="mode-label">Responder por voz</span>
-                        <span class="mode-desc">Fale a resposta; a IA avalia</span>
-                    </button>
-                    <button class="btn mode-btn" onclick="startSession(selectedDeckId, 'buttons')">
-                        <span class="mode-emoji">⌨️</span>
-                        <span class="mode-label">Responder por opções</span>
-                        <span class="mode-desc">Again · Hard · Good · Easy (atalhos 1–4)</span>
-                    </button>
+
+                <!-- Passo 1: voz ou opções -->
+                <div id="mode-pick">
+                    <p class="mode-prompt">Como você quer responder?</p>
+                    <div class="mode-options">
+                        <button class="btn mode-btn" onclick="startSession(selectedDeckId, 'voice')">
+                            <span class="mode-emoji">🎙️</span>
+                            <span class="mode-label">Responder por voz</span>
+                            <span class="mode-desc">Fale a resposta; a IA avalia</span>
+                        </button>
+                        <button class="btn mode-btn" onclick="chooseOptionsMode()">
+                            <span class="mode-emoji">⌨️</span>
+                            <span class="mode-label">Responder por opções</span>
+                            <span class="mode-desc">Again · Hard · Good · Easy (atalhos 1–4)</span>
+                        </button>
+                    </div>
+                    <button class="btn btn-secondary" onclick="backToDecks()">← Voltar aos decks</button>
                 </div>
-                <button class="btn btn-secondary" onclick="backToDecks()">← Voltar aos decks</button>
+
+                <!-- Passo 2 (só no modo opções): ordem ou listagem -->
+                <div id="flow-pick" class="hidden">
+                    <p class="mode-prompt">Modo opções: como escolher os cards?</p>
+                    <div class="mode-options">
+                        <button class="btn mode-btn" onclick="startSession(selectedDeckId, 'buttons', 'order')">
+                            <span class="mode-emoji">🔢</span>
+                            <span class="mode-label">Responder na ordem</span>
+                            <span class="mode-desc">Due → New → Learn, um de cada vez</span>
+                        </button>
+                        <button class="btn mode-btn" onclick="startSession(selectedDeckId, 'buttons', 'list')">
+                            <span class="mode-emoji">📋</span>
+                            <span class="mode-label">Responder listagem</span>
+                            <span class="mode-desc">Veja a pilha e escolha qual card responder</span>
+                        </button>
+                    </div>
+                    <button class="btn btn-secondary" onclick="backToModes()">← Voltar</button>
+                </div>
             </div>
         </div>
 
@@ -981,6 +1185,25 @@
         <div id="card-wrapper" class="hidden">
             <div id="card-content">Carregando...</div>
             <div id="score-badge"></div>
+        </div>
+
+        <!-- Modo listagem: pilha de cards para escolher qual responder -->
+        <div id="list-screen" class="hidden">
+            <p id="list-deck-name" class="mode-deck"></p>
+            <p class="list-hint">Escolha um card que você já sabe para reduzir a pilha.</p>
+            <div id="list-tabs">
+                <button class="list-tab" data-col="review" onclick="switchColumn('review')">
+                    Due <span class="list-tab-count" id="list-count-review">0</span>
+                </button>
+                <button class="list-tab" data-col="new" onclick="switchColumn('new')">
+                    New <span class="list-tab-count" id="list-count-new">0</span>
+                </button>
+                <button class="list-tab" data-col="learn" onclick="switchColumn('learn')">
+                    Learn <span class="list-tab-count" id="list-count-learn">0</span>
+                </button>
+            </div>
+            <div id="list-cards"></div>
+            <button class="btn btn-secondary" onclick="endListSession()">⏹ Encerrar sessão</button>
         </div>
 
         <!-- Session end (hidden initially) -->
@@ -1070,9 +1293,42 @@
                 </div>
             </div>
         </div>
+
+        <!-- Gerar vídeo ilustrativo (Veo 3.1 Fast) e anexá-lo ao card -->
+        <div id="video-tools" class="hidden">
+            <button id="btn-video" class="btn btn-secondary" onclick="generateVideo()">
+                🎬 Gerar vídeo para ilustrar
+            </button>
+            <div id="video-preview-area" class="hidden">
+                <video id="video-el" controls playsinline></video>
+                <div id="video-actions">
+                    <button class="btn btn-illust-use" onclick="approveVideo()">✓ Usar vídeo</button>
+                    <button class="btn btn-secondary" onclick="generateVideo()">🔄 Gerar outro</button>
+                    <button class="btn btn-secondary" onclick="discardVideo()">✗ Descartar</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Transformar um card difícil em questão de múltipla escolha (Sonnet) -->
+        <div id="mcq-tools" class="hidden">
+            <button id="btn-mcq" class="btn btn-secondary" onclick="makeMcq()">
+                📝 Transformar em múltipla escolha
+            </button>
+            <div id="mcq-preview-area" class="hidden">
+                <div id="mcq-preview"></div>
+                <div id="mcq-actions">
+                    <button class="btn btn-illust-use" onclick="approveMcq()">✓ Criar e substituir</button>
+                    <button class="btn btn-secondary" onclick="makeMcq()">🔄 Gerar outra</button>
+                    <button class="btn btn-secondary" onclick="discardMcq()">✗ Cancelar</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div id="controls">
+        <button id="btn-back-list" class="btn btn-secondary hidden" onclick="backToList()">
+            ← Lista
+        </button>
         <button id="btn-skip" class="btn btn-secondary hidden" onclick="skipCard()">
             ⏭ Pular
         </button>
@@ -1098,10 +1354,14 @@
 
         // ---- Modo de resposta ----
         let currentMode = 'voice';   // 'voice' (fala + IA) ou 'buttons' (Again/Hard/Good/Easy)
+        let currentFlow = 'order';   // modo opções: 'order' (na ordem) ou 'list' (listagem)
         let selectedDeckId = null;   // deck escolhido, aguardando a escolha do modo
+        let selectedDeckName = '';   // nome do deck escolhido (exibido na listagem)
         let cardPhase = 'question';  // modo opções: 'question' → 'answer' → 'rating'
         let buttonsAnswerHtml = '';  // HTML da resposta, revelado no "Mostrar resposta"
         let buttonsLabels = [];      // rótulos de intervalo [again, hard, good, easy]
+        let listData = { new: [], learn: [], review: [] };  // cards por coluna (modo listagem)
+        let currentColumn = 'review';  // coluna exibida no momento na listagem
         let audioQueue = [];
         let isPlayingAudio = false;
         let globalAudio = new Audio();
@@ -1131,6 +1391,9 @@
         const btnSkip = document.getElementById('btn-skip');
         const btnBad = document.getElementById('btn-bad');
         const btnNext = document.getElementById('btn-next');
+        const btnBackList = document.getElementById('btn-back-list');
+        const listScreen = document.getElementById('list-screen');
+        const listCardsEl = document.getElementById('list-cards');
         const answerControls = document.getElementById('answer-controls');
         const btnShowAnswer = document.getElementById('btn-show-answer');
         const ratingButtons = document.getElementById('rating-buttons');
@@ -1139,6 +1402,14 @@
         const illustrationPreviewArea = document.getElementById('illustration-preview-area');
         const illustrationImg = document.getElementById('illustration-img');
         const btnIllustrate = document.getElementById('btn-illustrate');
+        const videoTools = document.getElementById('video-tools');
+        const videoPreviewArea = document.getElementById('video-preview-area');
+        const videoEl = document.getElementById('video-el');
+        const btnVideo = document.getElementById('btn-video');
+        const mcqTools = document.getElementById('mcq-tools');
+        const mcqPreviewArea = document.getElementById('mcq-preview-area');
+        const mcqPreview = document.getElementById('mcq-preview');
+        const btnMcq = document.getElementById('btn-mcq');
         const sessionEnd = document.getElementById('session-end');
         const sessionEndMsg = document.getElementById('session-end-msg');
         const flashOverlay = document.getElementById('flash-overlay');
@@ -1225,13 +1496,18 @@
         function showState(state) {
             startScreen.classList.toggle('hidden', state !== 'start');
             cardWrapper.classList.toggle('hidden', state !== 'card' && state !== 'result');
+            listScreen.classList.toggle('hidden', state !== 'list');
             sessionEnd.classList.toggle('hidden', state !== 'end');
             statsBar.classList.toggle('hidden', state !== 'card' && state !== 'result');
             currentDeck.classList.toggle('hidden', state !== 'card' && state !== 'result');
-            sessionTimer.classList.toggle('hidden', state !== 'card' && state !== 'result');
+            // O cronômetro acompanha toda a sessão, inclusive na tela de listagem.
+            sessionTimer.classList.toggle('hidden', state !== 'card' && state !== 'result' && state !== 'list');
             if (state !== 'card' && state !== 'result') sessionEta.classList.add('hidden');
 
             const buttonsMode = currentMode === 'buttons';
+
+            // Modo listagem: botão "← Lista" some o card e volta pra pilha.
+            btnBackList.classList.toggle('hidden', !(currentFlow === 'list' && state === 'card'));
 
             // Modo voz: microfone (durante o card) e "Próximo" (no resultado).
             btnRecord.classList.toggle('hidden', buttonsMode || state !== 'card');
@@ -1264,6 +1540,10 @@
                 ratingButtons.classList.add('hidden');
                 illustrationTools.classList.add('hidden');
                 illustrationPreviewArea.classList.add('hidden');
+                videoTools.classList.add('hidden');
+                videoPreviewArea.classList.add('hidden');
+                mcqTools.classList.add('hidden');
+                mcqPreviewArea.classList.add('hidden');
                 btnSkip.disabled = false;
                 btnBad.disabled = false;
                 setStatus('Pressione <b>Enter</b> ou toque em <b>Mostrar resposta</b>');
@@ -1280,6 +1560,16 @@
                 illustrationTools.classList.remove('hidden');
                 btnIllustrate.disabled = false;
                 btnIllustrate.textContent = '🎨 Gerar imagem para ilustrar';
+                // Vídeo ilustrativo: também após revelar a resposta.
+                videoPreviewArea.classList.add('hidden');
+                videoTools.classList.remove('hidden');
+                btnVideo.disabled = false;
+                btnVideo.textContent = '🎬 Gerar vídeo para ilustrar';
+                // Transformar em múltipla escolha: também após revelar a resposta.
+                mcqPreviewArea.classList.add('hidden');
+                mcqTools.classList.remove('hidden');
+                btnMcq.disabled = false;
+                btnMcq.textContent = '📝 Transformar em múltipla escolha';
                 btnSkip.disabled = false;
                 btnBad.disabled = false;
                 setStatus('Como foi? <b>1</b> Again · <b>2</b> Hard · <b>3</b> Good · <b>4</b> Easy');
@@ -1303,7 +1593,7 @@
             btnSkip.disabled = true;
             btnBad.disabled = true;
             socket.emit('answer_button', { ease });
-            setStatus('Carregando próximo card...');
+            setStatus(currentFlow === 'list' ? 'Voltando à lista...' : 'Carregando próximo card...');
         }
 
         // ---- Ilustração por IA (modo opções) ----
@@ -1324,6 +1614,145 @@
             socket.emit('discard_illustration');
             illustrationPreviewArea.classList.add('hidden');
             btnIllustrate.disabled = false;
+        }
+
+        // ---- Vídeo ilustrativo por IA (modo opções) ----
+        function generateVideo() {
+            if (currentMode !== 'buttons') return;
+            btnVideo.disabled = true;
+            videoPreviewArea.classList.add('hidden');
+            setStatus('<span class="spinner"></span> Gerando vídeo... (pode levar 1-2 min)');
+            socket.emit('generate_video');
+        }
+
+        function approveVideo() {
+            socket.emit('approve_video');
+            setStatus('<span class="spinner"></span> Salvando vídeo no card...');
+        }
+
+        function discardVideo() {
+            socket.emit('discard_video');
+            videoPreviewArea.classList.add('hidden');
+            videoEl.removeAttribute('src');
+            videoEl.load();
+            btnVideo.disabled = false;
+        }
+
+        // ---- Transformar em múltipla escolha (modo opções) ----
+        function makeMcq() {
+            if (currentMode !== 'buttons') return;
+            btnMcq.disabled = true;
+            mcqPreviewArea.classList.add('hidden');
+            setStatus('<span class="spinner"></span> Gerando múltipla escolha...');
+            socket.emit('make_mcq');
+        }
+
+        function approveMcq() {
+            socket.emit('approve_mcq');
+            setStatus('<span class="spinner"></span> Criando card de múltipla escolha...');
+        }
+
+        function discardMcq() {
+            socket.emit('discard_mcq');
+            mcqPreviewArea.classList.add('hidden');
+            btnMcq.disabled = false;
+        }
+
+        // Renderiza o preview da múltipla escolha (usa textContent para escapar
+        // texto do LLM). Destaca a alternativa correta e mostra as justificativas.
+        function renderMcqPreview(mcq) {
+            mcqPreview.innerHTML = '';
+            const q = document.createElement('div');
+            q.className = 'mcq-q';
+            q.textContent = mcq.question || '';
+            mcqPreview.appendChild(q);
+
+            const options = mcq.options || {};
+            Object.keys(options).forEach((letter) => {
+                const opt = document.createElement('div');
+                opt.className = 'mcq-opt' + (letter === mcq.answer ? ' correct' : '');
+                const l = document.createElement('span');
+                l.className = 'mcq-letter';
+                l.textContent = letter + ')';
+                const t = document.createElement('span');
+                t.className = 'mcq-text';
+                const note = (mcq.notes || {})[letter];
+                t.textContent = options[letter] + (note ? '  — ' + note : '');
+                opt.appendChild(l);
+                opt.appendChild(t);
+                mcqPreview.appendChild(opt);
+            });
+
+            if (mcq.note) {
+                const n = document.createElement('div');
+                n.className = 'mcq-note';
+                n.textContent = '💡 ' + mcq.note;
+                mcqPreview.appendChild(n);
+            }
+        }
+
+        // ---- Modo listagem: escolher da pilha qual card responder ----
+        function renderCardList(data) {
+            listData = data.cards || { new: [], learn: [], review: [] };
+            currentColumn = data.column || currentColumn;
+            document.getElementById('list-deck-name').textContent =
+                '📚 ' + selectedDeckName.replace(/::/g, ' › ');
+            const counts = data.counts || {};
+            ['new', 'learn', 'review'].forEach((c) => {
+                document.getElementById('list-count-' + c).textContent = counts[c] || 0;
+            });
+            renderColumn(currentColumn);
+            showState('list');
+            setStatus('');
+        }
+
+        function renderColumn(col) {
+            currentColumn = col;
+            document.querySelectorAll('.list-tab').forEach((t) =>
+                t.classList.toggle('active', t.dataset.col === col));
+            const cards = listData[col] || [];
+            if (!cards.length) {
+                listCardsEl.innerHTML = '<p class="list-empty">Nenhum card nesta pilha 🎉</p>';
+                return;
+            }
+            listCardsEl.innerHTML = '';
+            cards.forEach((c, i) => {
+                const item = document.createElement('div');
+                item.className = 'list-card-item';
+                const num = document.createElement('span');
+                num.className = 'list-card-num';
+                num.textContent = i + 1;
+                const text = document.createElement('span');
+                text.className = 'list-card-text';
+                text.textContent = c.preview;
+                item.appendChild(num);
+                item.appendChild(text);
+                item.onclick = () => pickCard(c.id);
+                listCardsEl.appendChild(item);
+            });
+        }
+
+        // Trocar de coluna pede a lista fresca ao servidor (que também passa a
+        // lembrar qual coluna reabrir depois de responder um card).
+        function switchColumn(col) {
+            if (!socket) return;
+            socket.emit('list_cards', { column: col });
+        }
+
+        function pickCard(cardId) {
+            cardPhase = 'question';
+            socket.emit('pick_card', { card_id: cardId });
+            setStatus('Carregando card...');
+        }
+
+        function backToList() {
+            socket.emit('list_cards', { column: currentColumn });
+        }
+
+        function endListSession() {
+            // Recarrega para voltar à escolha de decks; o disconnect grava as
+            // estatísticas da sessão no servidor.
+            location.reload();
         }
 
         function setStatus(msg) {
@@ -1372,18 +1801,37 @@
         const startSubtitle = document.getElementById('start-subtitle');
         const decksContainer = document.getElementById('decks-container');
 
+        const modePick = document.getElementById('mode-pick');
+        const flowPick = document.getElementById('flow-pick');
+
         function chooseDeck(deckId, deckName) {
             selectedDeckId = deckId;
+            selectedDeckName = deckName;
             document.getElementById('mode-deck-name').textContent =
                 '📚 ' + deckName.replace(/::/g, ' › ');
             decksContainer.classList.add('hidden');
             startSubtitle.classList.add('hidden');
             topActions.classList.add('hidden');
             modeScreen.classList.remove('hidden');
+            modePick.classList.remove('hidden');
+            flowPick.classList.add('hidden');
+        }
+
+        // Modo opções → escolher o fluxo (na ordem ou listagem).
+        function chooseOptionsMode() {
+            modePick.classList.add('hidden');
+            flowPick.classList.remove('hidden');
+        }
+
+        function backToModes() {
+            flowPick.classList.add('hidden');
+            modePick.classList.remove('hidden');
         }
 
         function backToDecks() {
             modeScreen.classList.add('hidden');
+            flowPick.classList.add('hidden');
+            modePick.classList.remove('hidden');
             decksContainer.classList.remove('hidden');
             startSubtitle.classList.remove('hidden');
             topActions.classList.remove('hidden');
@@ -1411,8 +1859,10 @@
         }
 
         // ---- Socket.IO ----
-        async function startSession(deckId, mode) {
+        async function startSession(deckId, mode, flow) {
             currentMode = mode === 'buttons' ? 'buttons' : 'voice';
+            currentFlow = (currentMode === 'buttons' && flow === 'list') ? 'list' : 'order';
+            currentColumn = 'review';
             cardPhase = 'question';
 
             // O modo voz precisa de microfone e do "destrave" de áudio (TTS); o
@@ -1456,7 +1906,11 @@
 
             socket.on('connect', () => {
                 setStatus('Carregando cards...');
-                socket.emit('start_session', { deck_id: deckId, mode: currentMode });
+                socket.emit('start_session', { deck_id: deckId, mode: currentMode, flow: currentFlow });
+            });
+
+            socket.on('card_list', (data) => {
+                renderCardList(data);
             });
 
             socket.on('stats', (data) => {
@@ -1615,6 +2069,62 @@
                 img.style.maxWidth = '100%';
                 cardContent.appendChild(img);
                 setStatus('Imagem adicionada! Como foi? <b>1</b> Again · <b>2</b> Hard · <b>3</b> Good · <b>4</b> Easy');
+            });
+
+            // ---- Vídeo ilustrativo (modo opções) ----
+            socket.on('video_status', (data) => {
+                setStatus('<span class="spinner"></span> ' + data.message);
+            });
+
+            socket.on('video_error', (data) => {
+                setStatus('⚠️ ' + data.message);
+                btnVideo.disabled = false;
+            });
+
+            socket.on('video_preview', (data) => {
+                videoEl.src = data.video;
+                videoPreviewArea.classList.remove('hidden');
+                btnVideo.disabled = false;
+                setStatus('Gostou? <b>Usar vídeo</b> o adiciona ao verso do card.');
+            });
+
+            socket.on('video_saved', (data) => {
+                videoPreviewArea.classList.add('hidden');
+                btnVideo.textContent = '✓ Vídeo adicionado';
+                btnVideo.disabled = true;
+                // Mostra o vídeo no card atual também (já fica ilustrado agora).
+                const v = document.createElement('video');
+                v.src = data.src;
+                v.controls = true;
+                v.playsInline = true;
+                v.style.maxWidth = '100%';
+                cardContent.appendChild(v);
+                setStatus('Vídeo adicionado! Como foi? <b>1</b> Again · <b>2</b> Hard · <b>3</b> Good · <b>4</b> Easy');
+            });
+
+            // ---- Transformar em múltipla escolha (modo opções) ----
+            socket.on('mcq_status', (data) => {
+                setStatus('<span class="spinner"></span> ' + data.message);
+            });
+
+            socket.on('mcq_error', (data) => {
+                setStatus('⚠️ ' + data.message);
+                btnMcq.disabled = false;
+            });
+
+            socket.on('mcq_preview', (data) => {
+                renderMcqPreview(data.mcq);
+                mcqPreviewArea.classList.remove('hidden');
+                btnMcq.disabled = false;
+                setStatus('Confira a múltipla escolha e toque em <b>Criar e substituir</b>.');
+            });
+
+            socket.on('mcq_created', (data) => {
+                // O card original foi apagado e a MCQ criada; o backend já manda o
+                // próximo card (ou a lista). Só limpa o preview aqui.
+                mcqPreviewArea.classList.add('hidden');
+                mcqTools.classList.add('hidden');
+                setStatus(data.message || 'Card transformado em múltipla escolha.');
             });
 
             socket.on('session_end', (data) => {
